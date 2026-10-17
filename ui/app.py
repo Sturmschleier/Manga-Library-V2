@@ -38,15 +38,15 @@ import gallery
 import logic
 import release_calendar
 from library import LibraryBuffer
-from ui import APP_TITLE
+from ui import APP_TITLE, theme
 from ui.actions_covers import CoverActions
 from ui.actions_data import DataActions
 from ui.actions_lookup import LookupActions
-from ui.common import TEXT_MUTED, alert, close_dialog, confirm, on_ui, open_path
+from ui.common import alert, close_dialog, confirm, on_ui, open_path
 from ui.sidebar import Sidebar
+from ui.theme import P
 from ui.tile import TILE_ASPECT, TILE_WIDTH, TileActions, build_tile
 
-PAGE_BG = "#F2F4F7"
 MENU_WIDTH = 390   # Menüeinträge sonst so schmal wie die Menüleiste - Texte würden abgeschnitten
 SEARCH_DELAY_SECONDS = 0.2   # Suche erst nach kurzer Tipp-Pause auswerten
 COLOR_OPTIONS = (
@@ -61,7 +61,7 @@ COLOR_OPTIONS = (
 def _separator():
     """Senkrechter Trennstrich der Werkzeugleiste (feste Höhe - ein
     VerticalDivider hätte in einer umbrechenden Zeile keine)."""
-    return ft.Container(width=1, height=28, bgcolor="#C9CED6", margin=ft.Margin.symmetric(horizontal=4))
+    return ft.Container(width=1, height=28, bgcolor=P.border, margin=ft.Margin.symmetric(horizontal=4))
 
 
 def _handler(func):
@@ -99,8 +99,7 @@ class MangaApp(CoverActions, DataActions, LookupActions):
         )
 
         page.title = APP_TITLE
-        page.bgcolor = PAGE_BG
-        page.theme_mode = ft.ThemeMode.LIGHT
+        theme.apply(page)
         page.padding = 8
         page.window.width = 1450
         page.window.height = 900
@@ -110,6 +109,8 @@ class MangaApp(CoverActions, DataActions, LookupActions):
         page.window.on_event = self._on_window_event
         page.on_keyboard_event = self._on_key
         page.on_resize = lambda _e: self._apply_sidebar_width()
+        page.on_platform_brightness_change = self._on_brightness_change
+        self._log_lines = []   # Live-Log der Sitzung - übersteht einen Neuaufbau (Farbschema)
 
         self._build()
         self.refresh()
@@ -181,13 +182,13 @@ class MangaApp(CoverActions, DataActions, LookupActions):
             expand=True, max_extent=TILE_WIDTH, child_aspect_ratio=TILE_ASPECT, spacing=14, run_spacing=14,
             padding=ft.Padding.only(top=4, bottom=12, right=8, left=4),
         )
-        self.search_field = ft.TextField(dense=True, expand=True, prefix_icon=ft.Icons.SEARCH, bgcolor="#FFFFFF",
+        self.search_field = ft.TextField(dense=True, expand=True, prefix_icon=ft.Icons.SEARCH, bgcolor=P.surface,
                                          on_change=self._on_search_change)
         self.sidebar = Sidebar(self.search_field, on_open_month=self._open_calendar_month)
         self.sidebar_box = ft.Container(self.sidebar.control, width=300)
 
         self.status_text = ft.Text(size=12)
-        self.cover_status = ft.Text(size=12, color=TEXT_MUTED, visible=False)
+        self.cover_status = ft.Text(size=12, color=P.text_muted, visible=False)
         self.cover_cancel_btn = ft.TextButton("Abbrechen", visible=False, on_click=_handler(self.cancel_cover_job),
                                               style=ft.ButtonStyle(padding=4))
         footer = ft.Row(
@@ -196,6 +197,8 @@ class MangaApp(CoverActions, DataActions, LookupActions):
             spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
 
+        for line in self._log_lines:
+            self.sidebar.log(line)
         self.page.add(ft.Column(
             [
                 self.menubar,
@@ -232,7 +235,7 @@ class MangaApp(CoverActions, DataActions, LookupActions):
     def _item(self, label, func, shortcut="", icon=None, tooltip=None):
         return ft.MenuItemButton(
             content=ft.Text(label), leading=ft.Icon(icon, size=18) if icon else ft.Container(width=18),
-            trailing=ft.Text(shortcut, size=12, color=TEXT_MUTED) if shortcut else None,
+            trailing=ft.Text(shortcut, size=12, color=P.text_muted) if shortcut else None,
             on_click=_handler(func), tooltip=tooltip, width=MENU_WIDTH,
         )
 
@@ -288,7 +291,14 @@ class MangaApp(CoverActions, DataActions, LookupActions):
                              lambda checked, k=key: self._set_color(k, checked))
             for key, label in COLOR_OPTIONS
         ])
+        theme_menu = ft.SubmenuButton(
+            content=ft.Text("Darstellung"), leading=ft.Icon(ft.Icons.CONTRAST, size=18), width=MENU_WIDTH,
+            controls=[self._check_item(label, lambda m=key: theme.mode() == m,
+                                       lambda _checked, m=key: self.set_theme(m))
+                      for key, label in theme.THEME_OPTIONS],
+        )
         config_menu = ft.SubmenuButton(content=ft.Text("Konfigurieren"), controls=[
+            theme_menu,
             colors_menu,
             self._item("Konfiguration …", self.open_config, icon=ft.Icons.SETTINGS,
                        tooltip="Zentrale Konfigurationsdatei (config.json) bearbeiten"),
@@ -314,7 +324,23 @@ class MangaApp(CoverActions, DataActions, LookupActions):
             self._item(f"Über {APP_TITLE} …", self.open_about, icon=ft.Icons.INFO_OUTLINE),
         ])
         return ft.MenuBar(controls=[file_menu, config_menu, help_menu],
-                          style=ft.MenuStyle(bgcolor="#FFFFFF", elevation=0))
+                          style=ft.MenuStyle(bgcolor=P.surface, elevation=0))
+
+    def set_theme(self, mode: str):
+        """Farbschema wechseln (siehe ui/theme.py) und das Fenster neu aufbauen."""
+        config.set_value("theme_mode", mode)
+        self._rebuild()
+
+    def _on_brightness_change(self, _e):
+        if theme.mode() == "system":
+            self._rebuild()
+
+    def _rebuild(self):
+        theme.apply(self.page)
+        with self._ui_lock:
+            self.page.controls.clear()
+            self._build()
+            self.refresh()
 
     def _set_color(self, key, checked):
         enabled = dict(config.load().get("colors_enabled") or {})
@@ -366,7 +392,7 @@ class MangaApp(CoverActions, DataActions, LookupActions):
     def _swatch(color, label, border=None):
         box = ft.Container(width=14, height=14, bgcolor=color, border=ft.Border.all(1, "#888888"))
         if border:
-            box = ft.Container(width=20, height=14, border_radius=3, bgcolor="#FFFFFF",
+            box = ft.Container(width=20, height=14, border_radius=3, bgcolor=P.surface,
                                border=ft.Border.all(3, border))
         return ft.Row([box, ft.Text(label, size=12)], spacing=4, tight=True)
 
@@ -451,7 +477,7 @@ class MangaApp(CoverActions, DataActions, LookupActions):
         self.page.title = APP_TITLE + (" *" if dirty else "")
         self.undo_btn.disabled = not self.buffer.can_undo
         self.redo_btn.disabled = not self.buffer.can_redo
-        self.status_text.color = colors.NEW_VALUE_TEXT_COLOR if dirty else TEXT_MUTED
+        self.status_text.color = colors.NEW_VALUE_TEXT_COLOR if dirty else P.text_muted
 
     def _replace_tile(self, row_id):
         """Nur die Kachel eines Eintrags neu zeichnen (Auswahl, "+1") - die
@@ -512,6 +538,7 @@ class MangaApp(CoverActions, DataActions, LookupActions):
     def _log(self, message: str):
         """Dauerhaft ins Änderungsprotokoll (changelog.py) und live in die Seitenleiste."""
         line = changelog.log_change(message)
+        self._log_lines.append(line)
         self.sidebar.log(line)
         self.page.update()
 

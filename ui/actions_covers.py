@@ -35,7 +35,7 @@ class CoverActions:
         jedem Neuaufbau alle Bilder als Daten durch die Verbindung), in der
         Browser-Vorschau die Bilddaten."""
         info = self.covers.get(titel)
-        if info is None or info.quelle not in (covers.QUELLE_DNB, covers.QUELLE_VLB, covers.QUELLE_EIGEN):
+        if info is None or info.quelle not in (*covers.FOUND_SOURCES, covers.QUELLE_EIGEN):
             return None
         if info.path is None:
             return None
@@ -136,8 +136,9 @@ class CoverActions:
         def run():
             info = self._search_one(titel, entry.get("verlag"), entry.get("typ"))
             if info is not None and info.path:
-                quelle = "VLB" if info.quelle == covers.QUELLE_VLB else "DNB"
-                on_ui(self.page, self._toast, f"Cover für „{titel}“ gefunden ({quelle}, ISBN {info.isbn}).")
+                quelle = covers.SOURCE_LABELS.get(info.quelle, info.quelle)
+                isbn = f", ISBN {info.isbn}" if info.isbn else ""
+                on_ui(self.page, self._toast, f"Cover für „{titel}“ gefunden ({quelle}{isbn}).")
             else:
                 on_ui(self.page, self._toast,
                       f"Kein Cover für „{titel}“ gefunden – du kannst ein eigenes Bild wählen.")

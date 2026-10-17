@@ -16,9 +16,8 @@ from typing import Optional
 import flet as ft
 
 import gallery
-from ui.common import TEXT_MUTED, section, value_row
-
-ALT_ROW = "#F3F5F8"   # abwechselnde Zeilenfarbe wie setAlternatingRowColors
+from ui.common import section, value_row
+from ui.theme import P
 
 
 class Sidebar:
@@ -42,7 +41,7 @@ class Sidebar:
 
         self.log_view = ft.ListView(spacing=2, height=200, auto_scroll=True)
         self.log_placeholder = ft.Text("Änderungen erscheinen hier, sobald sie passieren …",
-                                       size=12, italic=True, color=TEXT_MUTED)
+                                       size=12, italic=True, color=P.text_muted)
         self.log_view.controls.append(self.log_placeholder)
 
         def clickable(row, offset):
@@ -64,7 +63,7 @@ class Sidebar:
             "per „+1“ nachgetragen."
         )
         typ_box = section("Anzahl nach Typ", [
-            ft.Text("Gesamt / Gelesen / Offen", size=12, italic=True, color=TEXT_MUTED),
+            ft.Text("Gesamt / Gelesen / Offen", size=12, italic=True, color=P.text_muted),
             self.typ_list,
         ])
         typ_box.tooltip = ("Gesamt = Summe „Bände (bis)“, Gelesen = Summe „Gelesen bis“, "
@@ -84,7 +83,7 @@ class Sidebar:
 
     @staticmethod
     def _list_row(text: str, index: int) -> ft.Control:
-        return ft.Container(ft.Text(text, size=13), bgcolor=ALT_ROW if index % 2 else None,
+        return ft.Container(ft.Text(text, size=13), bgcolor=P.alt_row if index % 2 else None,
                             padding=ft.Padding.symmetric(horizontal=4, vertical=2))
 
     def update(self, entries, exclude_gestoppt: bool, today: Optional[date] = None) -> None:

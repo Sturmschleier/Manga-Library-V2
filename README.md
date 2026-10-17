@@ -50,10 +50,17 @@ Tabelle, Seitenleiste rechts, Statuszeile mit Farblegende.
   ausstehende Termine, Live-Log der Sitzung.
 - **Cover vom ersten Band:** werden nach dem Start im Hintergrund gesucht -
   zuerst bei der Deutschen Nationalbibliothek, als Ausweichlösung im VLB
-  (buchhandel.de) - und im Ordner `covers/` abgelegt. Jeder Titel wird nur
+  (buchhandel.de), bei Verlag JNC Nina direkt beim Verlag - und im Ordner
+  `covers/` abgelegt. Jeder Titel wird nur
   einmal gesucht, ohne Treffer nach 30 Tagen erneut. „Datei → Cover neu
   suchen …“ sucht fehlende oder alle Cover noch einmal (eigene Bilder bleiben).
   Abschalten der automatischen Suche: `"cover_auto_lookup": false`.
+- **Bestellungen von Konold und Thalia:** Bestätigungen, Status- und
+  Abholmails (Datei oder Postfach) markieren die Titel als bestellt bzw.
+  abholbereit. Beim Postfach wählt „Absender enthält“ den Buchhändler.
+- **Veröffentlichungskalender** je Monat (Strg+K): eine Zeile pro
+  Erscheinungstag mit den Verlagen, darunter die Titel mit Bandnummer.
+- **Farbschema** hell, dunkel oder wie Windows: „Konfigurieren → Darstellung“.
 - Beim Schließen mit ungespeicherten Änderungen kommt eine Rückfrage; nur ein
   Programmfenster gleichzeitig.
 
@@ -65,7 +72,7 @@ lassen sich aber mehrere auf einmal wählen.
 
 1. ~~Kachelansicht mit Statusrahmen und +1-Knöpfen~~
 2. ~~Cover vom ersten Band~~
-3. Monatlicher Veröffentlichungskalender aus VÖ +1 bis VÖ +3
+3. ~~Monatlicher Veröffentlichungskalender aus VÖ +1 bis VÖ +3~~
 4. ~~Übrige Funktionen aus Version 1~~
 5. Release auf GitHub (exe-Build per `build.bat` gibt es schon)
 

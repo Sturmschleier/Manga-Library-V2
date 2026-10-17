@@ -54,6 +54,15 @@ PRESETS = {
     "mailbox.org": ("imap.mailbox.org", 993, "ssl"),
 }
 
+# Buchhändler, deren Bestellmails order_mail.py lesen kann: (Absender
+# enthält, Betreff enthält). Bei Thalia bleibt der Betreff offen - die Mails
+# der Buchhandlung heißen "Ihre Auftragsstatusänderung …" bzw.
+# "Abholnummer …", die Bestätigung "Wir bearbeiten Ihre Bestellung …".
+SHOP_FILTERS = {
+    "Konold": ("konold", "Bestellung"),
+    "Thalia": ("thalia", ""),
+}
+
 _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 

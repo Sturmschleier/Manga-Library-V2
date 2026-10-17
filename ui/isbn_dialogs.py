@@ -15,7 +15,8 @@ import flet as ft
 
 import config
 import shops
-from ui.common import MONO, TEXT_MUTED, close_dialog, copy_text
+from ui.common import MONO, close_dialog, copy_text
+from ui.theme import P
 
 # Markdown-Link [Text](URL) - bis zur Klammer, auf die Leerraum, Zeilenende
 # oder eine Tabellen-Pipe folgt (URLs der buchhandel.de-Suche enthalten
@@ -23,7 +24,6 @@ from ui.common import MONO, TEXT_MUTED, close_dialog, copy_text
 _LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://\S+?)\)(?=\s|$|\|)|(https?://\S+)")
 FALLBACK_BG = "#FBD3D3"
 SONDERAUSGABE_BG = "#FFE08A"
-LINK_COLOR = "#0B57D0"
 CHAR_WIDTH = 7.6     # Breite eines Zeichens der Festbreitenschrift (Consolas, Größe 13)
 LINE_HEIGHT = 19
 
@@ -76,7 +76,7 @@ def open_isbn_lookup_dialog(page: ft.Page, on_submit: Callable[[tuple], None]) -
             ft.Row([shop, ft.Text("Fallback-Suche:"),
                     ft.Text(str(config.get("isbn_fallback_provider", "buchhandel.de")),
                             weight=ft.FontWeight.BOLD)], wrap=True),
-            ft.Text("(änderbar über „Konfigurieren → Konfiguration …“)", size=12, color=TEXT_MUTED),
+            ft.Text("(änderbar über „Konfigurieren → Konfiguration …“)", size=12, color=P.text_muted),
             group, overwrite,
         ], tight=True, spacing=8), width=580),
         actions=[ft.FilledButton("Suche starten", on_click=start),
@@ -98,13 +98,19 @@ def _line_control(line: str, fallback_marker: str, special_marker: str, no_wrap:
             spans.append(ft.TextSpan(line[pos:start]))
         label, url = (m.group(1), m.group(2)) if m.group(1) is not None else (m.group(3), m.group(3))
         spans.append(ft.TextSpan(label, url=url, style=ft.TextStyle(
-            color=LINK_COLOR, decoration=ft.TextDecoration.UNDERLINE)))
+            decoration=ft.TextDecoration.UNDERLINE)))
         pos = end
     if pos < len(line):
         spans.append(ft.TextSpan(line[pos:]))
     bg = FALLBACK_BG if fallback_marker in line else SONDERAUSGABE_BG if special_marker in line else None
+    # auf den hellen Markierungen dunkle Schrift und Links, sonst die des Farbschemas
+    text_color, link_color = ("#1A1A1A", "#0B57D0") if bg else (P.text, P.link)
+    for span in spans:
+        if span.url:
+            span.style.color = link_color
     return ft.Container(
-        ft.Text(spans=spans or [ft.TextSpan(" ")], font_family=MONO, size=13, selectable=True, no_wrap=no_wrap),
+        ft.Text(spans=spans or [ft.TextSpan(" ")], font_family=MONO, size=13, selectable=True, no_wrap=no_wrap,
+                color=text_color),
         bgcolor=bg, padding=ft.Padding.symmetric(horizontal=4),
     )
 
@@ -146,7 +152,7 @@ def open_isbn_result(page: ft.Page, label: str, report, bestellliste_md: str) ->
             ft.Row([legend(FALLBACK_BG, "= keine ISBN automatisch gefunden (manueller Fallback-Link)"),
                     legend(SONDERAUSGABE_BG, f"{SONDERAUSGABE_MARKER} = normale Ausgabe und Sonderausgabe vorhanden")],
                    wrap=True),
-            ft.Container(lines, border=ft.Border.all(1, "#CCCCCC"), expand=True, bgcolor="#FFFFFF"),
+            ft.Container(lines, border=ft.Border.all(1, P.border), expand=True, bgcolor=P.surface),
         ], spacing=8), width=width, height=height),
         actions=[copy_btn, ft.FilledButton("Schließen", on_click=lambda _e: close_dialog(page))],
     ))

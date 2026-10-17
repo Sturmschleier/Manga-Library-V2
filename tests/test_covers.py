@@ -311,3 +311,60 @@ def test_refresh_targets(tmp_data):
     assert [e["titel"] for e in covers.refresh_targets(entries, infos)] == ["Keins", "Entfernt", "Neu"]
     assert [e["titel"] for e in covers.refresh_targets(entries, infos, only_missing=False)] == [
         "Gefunden", "Keins", "Entfernt", "Neu"]
+
+
+# ------------------------------------------------------------ JNC Nina
+
+@pytest.mark.parametrize(("series", "titel", "typ", "ok"), [
+    ("The Eminence in Shadow", "The Eminence in Shadow", "Light Novel", True),
+    ("Brunhild", "Brunhild – Light Novel", "Light Novel", True),
+    ("Du bist nicht allein (Manga)", "Du bist nicht allein", "Manga", True),
+    ("Du bist nicht allein (Manga)", "Du bist nicht allein", "Light Novel", False),   # andere Ausgabe
+    ("The Faraway Paladin (FR)", "The Faraway Paladin", "Light Novel", False),         # französisch
+    ("Brunhild", "Brunhilde", "Light Novel", False),
+])
+def test_jnc_series_match(series, titel, typ, ok):
+    assert covers.jnc_series_match(series, titel, typ) == ok
+
+
+class _JsonResp:
+    def __init__(self, data):
+        self._data = data
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._data
+
+
+def test_find_jnc_cover_takes_volume_1_in_large_size(monkeypatch):
+    monkeypatch.setattr(covers, "_jnc_series_cache", None)
+    cover = "https://cdn.jnc-nina.eu/pub/img/480/webp/01K/A/B/C.jpg"
+
+    def get(url, params=None, headers=None, timeout=None):
+        if url.endswith("/series"):
+            return _JsonResp({"series": [{"title": "Brunhild", "slug": "brunhild"}], "pagination": {"lastPage": True}})
+        assert url.endswith("/series/brunhild/volumes")
+        return _JsonResp({"volumes": [{"number": 2, "cover": {"coverUrl": "x"}},
+                                      {"number": 1, "cover": {"coverUrl": cover}}]})
+
+    monkeypatch.setattr(covers.requests, "get", get)
+    assert covers.find_jnc_cover("Brunhild", "Light Novel") == "https://cdn.jnc-nina.eu/pub/img/960/jpg/01K/A/B/C.jpg"
+    assert covers.find_jnc_cover("Unbekannt", "Light Novel") is None
+
+
+def test_lookup_asks_jnc_first_for_jnc_titles(tmp_data, monkeypatch):
+    monkeypatch.setattr(covers, "find_jnc_cover", lambda titel, typ: "https://cdn/x.jpg")
+    monkeypatch.setattr(covers, "_download_image", lambda url, params=None: b"J" * 2000)
+    monkeypatch.setattr(covers, "find_band1_isbn", lambda *a, **kw: pytest.fail("DNB darf nicht gefragt werden"))
+    info = covers.lookup_and_store("Brunhild", "JNC Nina", "Light Novel")
+    assert info.quelle == covers.QUELLE_JNC
+    assert info.path.read_bytes() == b"J" * 2000
+
+
+def test_lookup_falls_back_to_dnb_when_jnc_has_nothing(tmp_data, monkeypatch):
+    monkeypatch.setattr(covers, "find_jnc_cover", lambda titel, typ: None)
+    monkeypatch.setattr(covers, "find_band1_isbn", lambda *a, **kw: ALBUS_1)
+    monkeypatch.setattr(covers, "download_cover", lambda isbn: b"D" * 2000)
+    assert covers.lookup_and_store("X", "JNC Nina", "Light Novel").quelle == covers.QUELLE_DNB

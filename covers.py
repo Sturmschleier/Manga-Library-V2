@@ -12,6 +12,8 @@ Ablauf je Titel:
      Treffern vor dem ältesten Jahr der vorigen.
   2. Das Cover zu dieser ISBN vom Cover-Dienst der DNB laden und als Datei
      in COVER_DIR ablegen.
+  0. Verlag JNC Nina: zuerst direkt beim Verlag (find_jnc_cover) - dessen
+     Schnittstelle kennt jede Reihe mit dem Cover jedes Bandes.
   3. Ausweichlösung VLB (buchhandel.de): Hat die DNB kein Bild, das Cover
      derselben ISBN aus dem VLB; findet die DNB keine ISBN, Band 1 im VLB
      suchen (find_band1_vlb - dort lässt sich aufsteigend sortieren, Band 1
@@ -51,9 +53,18 @@ IMAGE_EXTENSIONS = ("jpg", "jpeg", "png", "webp", "gif")
 
 QUELLE_DNB = "dnb"            # automatisch gefunden (DNB)
 QUELLE_VLB = "vlb"            # automatisch gefunden (VLB/buchhandel.de, Ausweichlösung)
+QUELLE_JNC = "jnc"            # automatisch gefunden (direkt bei JNC Nina)
+FOUND_SOURCES = (QUELLE_DNB, QUELLE_VLB, QUELLE_JNC)
+
+# JNC Nina: Reihenliste und Bände je Reihe (Schnittstelle der Verlagsseite
+# jnc-nina.eu); Cover in 960 Pixel als JPEG
+JNC_API = "https://api.jnc-nina.eu/app/v2"
+JNC_COVER_SIZE = ("/pub/img/480/webp/", "/pub/img/960/jpg/")
+JNC_HEADERS = {"User-Agent": "MangaLibrary/2 (private Bibliotheksverwaltung)", "Accept": "application/json"}
 QUELLE_EIGEN = "eigen"        # von Hand gewähltes Bild
 QUELLE_KEINE = "keine"        # gesucht, nichts gefunden - nach RETRY_DAYS erneut
 QUELLE_ENTFERNT = "entfernt"  # von Hand entfernt - nie wieder automatisch
+SOURCE_LABELS = {QUELLE_DNB: "DNB", QUELLE_VLB: "VLB", QUELLE_JNC: "JNC Nina", QUELLE_EIGEN: "eigenes Bild"}
 
 RETRY_DAYS = 30
 MAX_QUERIES_PER_PASS = 15     # Anfragen je Durchgang (mit/ohne Verlag) beim Rückwärtsblättern
@@ -333,6 +344,62 @@ def find_band1_vlb(titel: str, verlag: Optional[str] = None, typ: Optional[str] 
     return None
 
 
+# ------------------------------------------------------------ JNC Nina
+
+_jnc_series_cache = None
+_JNC_SUFFIX_RE = re.compile(r"\s*\((manga|light novel|fr)\)\s*$", re.IGNORECASE)
+
+
+def is_jnc(verlag: Optional[str]) -> bool:
+    return "jnc" in (verlag or "").casefold()
+
+
+def _jnc_series() -> list:
+    """Alle Reihen von JNC Nina (einmal je Programmlauf abgefragt)."""
+    global _jnc_series_cache
+    if _jnc_series_cache is None:
+        series, skip = [], 0
+        while True:
+            resp = requests.get(f"{JNC_API}/series", params={"format": "json", "skip": skip},
+                                headers=JNC_HEADERS, timeout=20)
+            resp.raise_for_status()
+            data = resp.json()
+            series += data.get("series") or []
+            if (data.get("pagination") or {}).get("lastPage", True) or not data.get("series"):
+                break
+            skip += len(data["series"])
+        _jnc_series_cache = series
+    return _jnc_series_cache
+
+
+def jnc_series_match(series_title: str, titel: str, typ: Optional[str]) -> bool:
+    """Passt die JNC-Reihe zum eigenen Titel? Gleich nach Normalisierung,
+    ohne Zusatz "(Manga)"/"(Light Novel)"; ein "(Manga)"-Zusatz muss zum Typ
+    passen - so wird die Light Novel nicht mit der Manga-Ausgabe verwechselt."""
+    is_manga_edition = "(manga)" in series_title.casefold()
+    wants_manga = (typ or "").strip().casefold() in ("manga", "manhwa")
+    if is_manga_edition != wants_manga or "(fr)" in series_title.casefold():
+        return False
+    return _normalize(_JNC_SUFFIX_RE.sub("", series_title)) == _normalize(search_title(titel))
+
+
+def find_jnc_cover(titel: str, typ: Optional[str] = None) -> Optional[str]:
+    """URL des Covers von Band 1 bei JNC Nina, sonst None."""
+    try:
+        series = [s for s in _jnc_series() if jnc_series_match(s.get("title") or "", titel, typ)]
+        if not series:
+            return None
+        resp = requests.get(f"{JNC_API}/series/{series[0]['slug']}/volumes", params={"format": "json"},
+                            headers=JNC_HEADERS, timeout=20)
+        resp.raise_for_status()
+        volumes = resp.json().get("volumes") or []
+    except (requests.RequestException, ValueError, KeyError):
+        return None
+    first = next((v for v in volumes if v.get("number") == 1), None)
+    url = ((first or {}).get("cover") or {}).get("coverUrl") or ""
+    return url.replace(*JNC_COVER_SIZE) if url else None
+
+
 def _store_image(info: CoverInfo, isbn: str, image: bytes, quelle: str) -> None:
     COVER_DIR.mkdir(parents=True, exist_ok=True)
     (COVER_DIR / f"{isbn}.jpg").write_bytes(image)
@@ -344,6 +411,14 @@ def lookup_and_store(titel: str, verlag: Optional[str] = None, typ: Optional[str
     """Sucht ISBN und Cover von Band 1 und merkt sich das Ergebnis - auch
     ein erfolgloses, damit nicht bei jedem Start erneut gesucht wird.
     Reihenfolge siehe Moduldoku; `use_vlb=False` lässt das VLB aus."""
+    if is_jnc(verlag):
+        url = find_jnc_cover(titel, typ)
+        image = _download_image(url) if url else None
+        if image:
+            name = "jnc_" + hashlib.sha1(titel.encode("utf-8")).hexdigest()[:12]
+            COVER_DIR.mkdir(parents=True, exist_ok=True)
+            (COVER_DIR / f"{name}.jpg").write_bytes(image)
+            return save(CoverInfo(titel, datei=f"{name}.jpg", quelle=QUELLE_JNC, geprueft_am=_today()))
     isbn = find_band1_isbn(titel, verlag, typ, log) or ""
     info = CoverInfo(titel, isbn=isbn, quelle=QUELLE_KEINE, geprueft_am=_today())
     image = download_cover(isbn) if isbn else None
@@ -375,7 +450,7 @@ def refresh_targets(entries, infos: dict, only_missing: bool = True) -> list:
         info = infos.get(titel)
         if info is not None and info.quelle == QUELLE_EIGEN:
             continue
-        if only_missing and info is not None and info.quelle in (QUELLE_DNB, QUELLE_VLB) and info.path:
+        if only_missing and info is not None and info.quelle in FOUND_SOURCES and info.path:
             continue
         seen.add(titel)
         result.append(entry)
