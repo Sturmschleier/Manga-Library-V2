@@ -87,7 +87,7 @@ def open_entry_dialog(page: ft.Page, title: str, on_save: Callable[[dict], None]
                     size=12, color=TEXT_MUTED),
             error,
         ],
-        spacing=12, tight=True, scroll=ft.ScrollMode.AUTO,
+        spacing=12, tight=True,
     )
     page.show_dialog(ft.AlertDialog(
         modal=True, title=ft.Text(title), content=ft.Container(form, width=620),
@@ -101,7 +101,7 @@ def open_config_dialog(page: ft.Page, on_saved: Callable) -> None:
     Werte der bekannten Einstellungen (config.validate), bevor gespeichert wird."""
     editor = ft.TextField(
         value=json.dumps(config.load(), indent=2, ensure_ascii=False, sort_keys=True),
-        multiline=True, min_lines=18, max_lines=24, text_style=ft.TextStyle(font_family=MONO, size=13),
+        multiline=True, min_lines=16, max_lines=16, text_style=ft.TextStyle(font_family=MONO, size=13),
     )
     error = ft.Text("", color="#B00020")
 
@@ -134,7 +134,7 @@ def open_config_dialog(page: ft.Page, on_saved: Callable) -> None:
                     "oder \"manga-passion\"), „follow_selection_after_edit“, „sidebar_width_fraction“, "
                     "„cover_auto_lookup“.", size=12, color=TEXT_MUTED),
             editor, error,
-        ], tight=True, spacing=8, scroll=ft.ScrollMode.AUTO), width=640),
+        ], tight=True, spacing=8), width=640),
         actions=[ft.FilledButton("Speichern", on_click=save),
                  ft.TextButton("Abbrechen", on_click=lambda _e: close_dialog(page))],
     ))
@@ -173,7 +173,7 @@ def open_about_dialog(page: ft.Page, data_dir) -> None:
                     ft.TextButton(str(data_dir), on_click=lambda _e: open_path(data_dir))], wrap=True),
             ft.Text("Verwendete Module", weight=ft.FontWeight.BOLD),
             table,
-        ], tight=True, spacing=6, scroll=ft.ScrollMode.AUTO), width=780),
+        ], tight=True, spacing=6), width=780),
         actions=[copy_btn, ft.FilledButton("Schließen", on_click=lambda _e: close_dialog(page))],
     ))
 

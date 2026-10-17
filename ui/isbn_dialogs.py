@@ -24,6 +24,8 @@ _LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://\S+?)\)(?=\s|$|\|)|(https?://\S+
 FALLBACK_BG = "#FBD3D3"
 SONDERAUSGABE_BG = "#FFE08A"
 LINK_COLOR = "#0B57D0"
+CHAR_WIDTH = 7.6     # Breite eines Zeichens der Festbreitenschrift (Consolas, Größe 13)
+LINE_HEIGHT = 19
 
 
 def open_isbn_lookup_dialog(page: ft.Page, on_submit: Callable[[tuple], None]) -> None:
@@ -82,7 +84,12 @@ def open_isbn_lookup_dialog(page: ft.Page, on_submit: Callable[[tuple], None]) -
     ))
 
 
-def _line_control(line: str, fallback_marker: str, special_marker: str) -> ft.Control:
+def _visible_length(line: str) -> int:
+    """Länge der Zeile, wie sie angezeigt wird (Links nur mit ihrem Text)."""
+    return len(_LINK_RE.sub(lambda m: m.group(1) if m.group(1) is not None else m.group(3), line))
+
+
+def _line_control(line: str, fallback_marker: str, special_marker: str, no_wrap: bool = False) -> ft.Control:
     spans = []
     pos = 0
     for m in _LINK_RE.finditer(line):
@@ -97,7 +104,7 @@ def _line_control(line: str, fallback_marker: str, special_marker: str) -> ft.Co
         spans.append(ft.TextSpan(line[pos:]))
     bg = FALLBACK_BG if fallback_marker in line else SONDERAUSGABE_BG if special_marker in line else None
     return ft.Container(
-        ft.Text(spans=spans or [ft.TextSpan(" ")], font_family=MONO, size=13, selectable=True),
+        ft.Text(spans=spans or [ft.TextSpan(" ")], font_family=MONO, size=13, selectable=True, no_wrap=no_wrap),
         bgcolor=bg, padding=ft.Padding.symmetric(horizontal=4),
     )
 
@@ -110,7 +117,15 @@ def open_isbn_result(page: ft.Page, label: str, report, bestellliste_md: str) ->
     fallback_marker = "manga-passion.de" if provider == "manga-passion" else "buchhandel.de"
     content = report.summary() if report else "(kein Ergebnis)"
     content += "\n\n" + ("─" * 70) + "\n\nBestellliste:\n\n" + (bestellliste_md or "")
-    lines = ft.ListView([_line_control(line, fallback_marker, SONDERAUSGABE_MARKER) for line in content.split("\n")],
+    raw_lines = content.split("\n")
+    # So breit, dass keine Zeile umbricht - höchstens so breit wie das
+    # Programmfenster; was dann noch zu lang ist, bricht um
+    longest = max((_visible_length(line) for line in raw_lines), default=40)
+    available = (page.width or 1400) - 80
+    width = min(available, max(700, longest * CHAR_WIDTH + 70))
+    no_wrap = longest * CHAR_WIDTH + 70 <= available
+    height = min((page.height or 900) - 220, max(240, LINE_HEIGHT * len(raw_lines) + 70))
+    lines = ft.ListView([_line_control(line, fallback_marker, SONDERAUSGABE_MARKER, no_wrap) for line in raw_lines],
                         spacing=0, expand=True)
     copy_btn = ft.TextButton("Bestellliste in Zwischenablage kopieren")
 
@@ -132,6 +147,6 @@ def open_isbn_result(page: ft.Page, label: str, report, bestellliste_md: str) ->
                     legend(SONDERAUSGABE_BG, f"{SONDERAUSGABE_MARKER} = normale Ausgabe und Sonderausgabe vorhanden")],
                    wrap=True),
             ft.Container(lines, border=ft.Border.all(1, "#CCCCCC"), expand=True, bgcolor="#FFFFFF"),
-        ], spacing=8), width=900, height=620),
+        ], spacing=8), width=width, height=height),
         actions=[copy_btn, ft.FilledButton("Schließen", on_click=lambda _e: close_dialog(page))],
     ))

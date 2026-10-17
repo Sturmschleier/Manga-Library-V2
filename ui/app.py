@@ -38,7 +38,7 @@ from ui import APP_TITLE
 from ui.actions_covers import CoverActions
 from ui.actions_data import DataActions
 from ui.actions_lookup import LookupActions
-from ui.common import TEXT_MUTED, alert, close_dialog, confirm, open_path
+from ui.common import TEXT_MUTED, alert, close_dialog, confirm, on_ui, open_path
 from ui.sidebar import Sidebar
 from ui.tile import TILE_ASPECT, TILE_WIDTH, TileActions, build_tile
 
@@ -470,7 +470,7 @@ class MangaApp(CoverActions, DataActions, LookupActions):
     def _on_search_change(self, _e):
         if self._search_timer is not None:
             self._search_timer.cancel()
-        self._search_timer = threading.Timer(SEARCH_DELAY_SECONDS, self._refresh_tiles)
+        self._search_timer = threading.Timer(SEARCH_DELAY_SECONDS, on_ui, (self.page, self._refresh_tiles))
         self._search_timer.start()
 
     def _toggle_sort_direction(self):

@@ -4,6 +4,13 @@ Gemeinsame Bausteine der Oberfläche: Meldungen, Rückfragen, Fortschritts-
 fenster für Hintergrund-Aufgaben, Passwort-Abfrage, Browser/Ordner öffnen,
 Zwischenablage. Entspricht QMessageBox, QProgressDialog, QInputDialog und
 gui/worker.AsyncCall aus Version 1.
+
+Wichtig für alles, was in einem Hintergrund-Thread läuft: Die Oberfläche
+nur über on_ui() ändern. Flet 1.0.4 stellt ein page.update() aus einem
+fremden Thread zwar in die Sendewarteschlange, weckt die Ereignisschleife
+aber nicht - die Änderung käme erst beim nächsten Ereignis des Fensters an
+(z.B. einer Mausbewegung). Ohne Fokus wirkte ein Fortschrittsbalken dadurch
+eingefroren und sprang beim Zurückkehren ins Fenster nach vorn.
 """
 
 import os
@@ -18,6 +25,16 @@ TEXT_MUTED = "#5F6673"
 MONO = "Consolas"
 
 
+def on_ui(page: ft.Page, func: Callable, *args) -> None:
+    """Führt `func(*args)` in der Ereignisschleife von Flet aus - aus jedem
+    Thread aufrufbar (siehe Moduldoku). page.run_task übergibt über
+    run_coroutine_threadsafe und weckt die Schleife dabei zuverlässig."""
+    async def run():
+        func(*args)
+
+    page.run_task(run)
+
+
 def close_dialog(page: ft.Page) -> None:
     try:
         page.pop_dialog()
@@ -25,12 +42,16 @@ def close_dialog(page: ft.Page) -> None:
         pass
 
 
+DETAILS_MAX_HEIGHT = 420
+
+
 def _details(details: str) -> ft.Control:
+    """Aufklappbare Details; lange Listen scrollen in ihrem eigenen Feld."""
     return ft.ExpansionTile(
         title=ft.Text("Details", size=13),
         controls=[ft.Container(
-            ft.Text(details, selectable=True, size=12, font_family=MONO),
-            height=min(320, 18 * (details.count("\n") + 2)), padding=8,
+            ft.Column([ft.Text(details, selectable=True, size=12, font_family=MONO)], scroll=ft.ScrollMode.AUTO),
+            height=min(DETAILS_MAX_HEIGHT, 18 * (details.count("\n") + 2)), padding=8,
         )],
     )
 
@@ -46,9 +67,11 @@ def alert(page: ft.Page, title: str, text: str, details: str = "", on_close: Opt
     body = [ft.Text(text, selectable=True)]
     if details:
         body.append(_details(details))
+    # Ohne Scrollen: das Fenster ist dann nur so hoch wie sein Inhalt (mit
+    # scroll=AUTO nähme es die ganze Fensterhöhe ein)
     page.show_dialog(ft.AlertDialog(
         modal=True, title=ft.Text(title),
-        content=ft.Container(ft.Column(body, tight=True, scroll=ft.ScrollMode.AUTO), width=560),
+        content=ft.Container(ft.Column(body, tight=True), width=720 if details else 520),
         actions=[ft.FilledButton("OK", on_click=ok)],
     ))
 
@@ -124,9 +147,12 @@ class Busy:
         self.page.update()
 
     def progress(self, done: int, total: int, text: str) -> None:
-        """Aus dem Hintergrund-Thread aufrufbar."""
-        if self.cancel_event.is_set():
-            return   # Hinweis "wird abgebrochen" stehen lassen
+        """Aus dem Hintergrund-Thread aufrufbar (läuft über on_ui)."""
+        on_ui(self.page, self._show_progress, done, total, text)
+
+    def _show_progress(self, done: int, total: int, text: str) -> None:
+        if self.cancel_event.is_set() or not self.dialog.open:
+            return   # Hinweis "wird abgebrochen" stehen lassen bzw. schon geschlossen
         self.bar.value = (done / total) if total else None
         self.text.value = text
         self.page.update()
@@ -138,15 +164,15 @@ class Busy:
 
 def run_background(page: ft.Page, func: Callable, on_done: Callable) -> None:
     """Führt `func()` in einem eigenen Thread aus und ruft danach
-    `on_done(result, error)` auf (error = Exception oder None) - wie
-    gui/worker.AsyncCall in Version 1."""
+    `on_done(result, error)` in der Ereignisschleife auf (error = Exception
+    oder None) - wie gui/worker.AsyncCall in Version 1."""
     def worker():
         result, error = None, None
         try:
             result = func()
         except Exception as exc:  # noqa: BLE001 - wird dem Nutzer angezeigt
             error = exc
-        on_done(result, error)
+        on_ui(page, on_done, result, error)
 
     page.run_thread(worker)
 
