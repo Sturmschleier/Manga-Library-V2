@@ -19,7 +19,7 @@ import flet as ft
 import changelog
 import covers
 import vlb_lookup
-from ui.common import alert
+from ui.common import alert, on_ui
 
 
 class CoverActions:
@@ -60,7 +60,7 @@ class CoverActions:
             changelog.log_error(f"Cover-Suche für „{titel}“ fehlgeschlagen: {exc}")
             return None
         if not self._closing:
-            self._set_cover(info)
+            on_ui(self.page, self._set_cover, info)   # läuft im Such-Thread
         return info
 
     # ------------------------------------------------- Suche im Hintergrund
@@ -81,7 +81,7 @@ class CoverActions:
             for done, entry in enumerate(todo, start=1):
                 if cancel.is_set() or self._closing:
                     break
-                self._show_cover_status(f"Cover werden gesucht: {done} von {len(todo)} …", True)
+                on_ui(self.page, self._show_cover_status, f"Cover werden gesucht: {done} von {len(todo)} …", True)
                 info = self._search_one(entry.get("titel") or "", entry.get("verlag"), entry.get("typ"))
                 if info is not None and info.path:
                     found += 1
@@ -90,12 +90,12 @@ class CoverActions:
             if self._closing:
                 return
             ended = "abgebrochen" if cancel.is_set() else "fertig"
-            self._show_cover_status(f"Cover-Suche {ended}: {found} von {done} gefunden", False)
+            on_ui(self.page, self._show_cover_status, f"Cover-Suche {ended}: {found} von {done} gefunden", False)
             if not startup:
-                self._log(f"Cover-Suche {ended}: {found} von {done} Titeln mit Cover.")
+                on_ui(self.page, self._log, f"Cover-Suche {ended}: {found} von {done} Titeln mit Cover.")
             time.sleep(8)
             if self._cover_cancel is None:
-                self._show_cover_status("", False)
+                on_ui(self.page, self._show_cover_status, "", False)
 
         self.page.run_thread(run)
         return True
@@ -137,9 +137,10 @@ class CoverActions:
             info = self._search_one(titel, entry.get("verlag"), entry.get("typ"))
             if info is not None and info.path:
                 quelle = "VLB" if info.quelle == covers.QUELLE_VLB else "DNB"
-                self._toast(f"Cover für „{titel}“ gefunden ({quelle}, ISBN {info.isbn}).")
+                on_ui(self.page, self._toast, f"Cover für „{titel}“ gefunden ({quelle}, ISBN {info.isbn}).")
             else:
-                self._toast(f"Kein Cover für „{titel}“ gefunden – du kannst ein eigenes Bild wählen.")
+                on_ui(self.page, self._toast,
+                      f"Kein Cover für „{titel}“ gefunden – du kannst ein eigenes Bild wählen.")
 
         self.page.run_thread(run)
 
