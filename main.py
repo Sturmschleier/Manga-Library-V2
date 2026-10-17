@@ -6,7 +6,10 @@ Aufruf:
     python main.py
 """
 
+import os
 import sys
+import threading
+import time
 import traceback
 
 import flet as ft
@@ -17,6 +20,9 @@ from instance_lock import InstanceLock
 from ui import APP_TITLE
 
 _lock = InstanceLock(str(db.DB_FILE) + ".lock")
+
+# So lange darf Flet nach dem Schließen des Fensters noch aufräumen
+EXIT_GRACE_SECONDS = 3
 
 
 def _install_excepthook():
@@ -43,10 +49,27 @@ def _already_running(page: ft.Page):
     ))
 
 
+def _exit_soon():
+    """Nach dem endgültigen Schließen des Fensters: Beendet das Programm
+    spätestens nach EXIT_GRACE_SECONDS. Flet (1.0.4) wartet sonst
+    gelegentlich endlos auf das bereits geschlossene Fenster, und das
+    Programm bliebe unsichtbar im Task-Manager hängen - samt Sperre gegen
+    ein zweites Programmfenster. Zu diesem Zeitpunkt ist alles gespeichert
+    oder bewusst verworfen; endet ft.run() rechtzeitig von selbst, kommt
+    dieser Thread (daemon) gar nicht mehr zum Zug."""
+
+    def run():
+        time.sleep(EXIT_GRACE_SECONDS)
+        _lock.release()
+        os._exit(0)
+
+    threading.Thread(target=run, name="exit-soon", daemon=True).start()
+
+
 def _main(page: ft.Page):
     from ui.app import MangaApp
 
-    MangaApp(page)
+    MangaApp(page, on_closed=_exit_soon)
 
 
 def main():
