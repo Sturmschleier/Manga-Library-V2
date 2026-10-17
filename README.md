@@ -50,7 +50,7 @@ Tabelle, Seitenleiste rechts, Statuszeile mit Farblegende.
   ausstehende Termine, Live-Log der Sitzung.
 - **Cover vom ersten Band:** werden nach dem Start im Hintergrund gesucht -
   zuerst bei der Deutschen Nationalbibliothek, als Ausweichlösung im VLB
-  (buchhandel.de), bei Verlag JNC Nina direkt beim Verlag - und im Ordner
+  (buchhandel.de) und zuletzt bei manga-passion.de - und im Ordner
   `covers/` abgelegt. Jeder Titel wird nur
   einmal gesucht, ohne Treffer nach 30 Tagen erneut. „Datei → Cover neu
   suchen …“ sucht fehlende oder alle Cover noch einmal (eigene Bilder bleiben).

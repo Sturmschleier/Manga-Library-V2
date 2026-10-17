@@ -36,9 +36,9 @@ def _record(titel, band, year, isbn="", series=None, publisher="Carlsen"):
 
 @pytest.fixture(autouse=True)
 def no_network(monkeypatch):
-    """Kein Test darf DNB oder VLB wirklich fragen."""
+    """Kein Test fragt wirklich im Netz - jede Anfrage verhält sich wie offline."""
     def blocked(*args, **kwargs):
-        raise AssertionError("echte Netzanfrage im Test")
+        raise covers.requests.ConnectionError("offline (Test)")
 
     monkeypatch.setattr(covers.requests, "get", blocked)
     monkeypatch.setattr(covers.vlb_lookup.requests, "get", blocked)
@@ -313,18 +313,60 @@ def test_refresh_targets(tmp_data):
         "Gefunden", "Keins", "Entfernt", "Neu"]
 
 
-# ------------------------------------------------------------ JNC Nina
+# ------------------------------------------------------- manga-passion.de
 
-@pytest.mark.parametrize(("series", "titel", "typ", "ok"), [
-    ("The Eminence in Shadow", "The Eminence in Shadow", "Light Novel", True),
-    ("Brunhild", "Brunhild – Light Novel", "Light Novel", True),
-    ("Du bist nicht allein (Manga)", "Du bist nicht allein", "Manga", True),
-    ("Du bist nicht allein (Manga)", "Du bist nicht allein", "Light Novel", False),   # andere Ausgabe
-    ("The Faraway Paladin (FR)", "The Faraway Paladin", "Light Novel", False),         # französisch
-    ("Brunhild", "Brunhilde", "Light Novel", False),
+@pytest.mark.parametrize(("title", "expected"), [
+    ("Solo Leveling Roman – Taschenbuchausgabe (eBook)", "Solo Leveling"),
+    ("Accel World – Light Novel", "Accel World"),
+    ("Sanda (eBook)", "Sanda"),
+    ("One Piece – Law", "One Piece – Law"),
 ])
-def test_jnc_series_match(series, titel, typ, ok):
-    assert covers.jnc_series_match(series, titel, typ) == ok
+def test_mp_edition_title(title, expected):
+    assert covers.mp_edition_title(title) == expected
+
+
+def _edition(id_, title, source_type, print_=True, publisher="altraverse"):
+    return {"id": id_, "title": title, "print": print_, "sources": [{"type": source_type}],
+            "publishers": [{"name": publisher}], "cover": f"https://media/edition{id_}.jpg"}
+
+
+def test_mp_prefers_matching_source_type_then_print_then_publisher():
+    manhwa = _edition(1, "Solo Leveling", covers.MP_SOURCE_MANGA)
+    roman = _edition(2, "Solo Leveling Roman", covers.MP_SOURCE_NOVEL)
+    roman_ebook = _edition(3, "Solo Leveling Roman (eBook)", covers.MP_SOURCE_NOVEL, print_=False)
+    rank = {e["id"]: covers._mp_rank(e, "Solo Leveling Light Novel", "Altraverse", "Light Novel")
+            for e in (manhwa, roman, roman_ebook)}
+    assert sorted(rank, key=rank.get) == [2, 3, 1]
+    assert covers._mp_rank(_edition(4, "Solo Leveling: Ragnarok", 0), "Solo Leveling", "", "Manga") is None
+
+
+def test_find_manga_passion_cover_takes_volume_1(monkeypatch):
+    def get(url, params=None, headers=None, timeout=None):
+        if url.endswith("/editions"):
+            return _JsonResp([_edition(7, "Sanda (eBook)", 0, print_=False), _edition(5, "Sanda", 0)])
+        assert url.endswith("/editions/5/volumes")
+        return _JsonResp([{"number": 2, "cover": "https://media/2.jpg"}, {"number": 1, "cover": "https://media/1.jpg"}])
+
+    monkeypatch.setattr(covers.requests, "get", get)
+    assert covers.find_manga_passion_cover("Sanda", "Pegasus Manga", "Manga") == "https://media/1.jpg"
+    assert covers.find_manga_passion_cover("Unbekannt", "", "Manga") is None
+
+
+def test_lookup_uses_manga_passion_last(tmp_data, monkeypatch):
+    calls = []
+    monkeypatch.setattr(covers, "find_band1_isbn", lambda *a, **kw: calls.append("dnb"))
+    monkeypatch.setattr(covers, "find_band1_vlb", lambda *a, **kw: calls.append("vlb"))
+    monkeypatch.setattr(covers, "find_manga_passion_cover", lambda *a: calls.append("mp") or "https://media/1.jpg")
+    monkeypatch.setattr(covers, "_download_image", lambda url, params=None: b"M" * 2000)
+    info = covers.lookup_and_store("Sanda", "Pegasus Manga", "Manga")
+    assert calls == ["dnb", "vlb", "mp"]
+    assert info.quelle == covers.QUELLE_MP
+    assert info.path.read_bytes() == b"M" * 2000
+
+
+def test_old_jnc_covers_stay_valid():
+    assert covers.QUELLE_JNC in covers.FOUND_SOURCES
+    assert not covers.needs_lookup(covers.CoverInfo("A", datei="jnc_x.jpg", quelle=covers.QUELLE_JNC))
 
 
 class _JsonResp:
@@ -336,35 +378,3 @@ class _JsonResp:
 
     def json(self):
         return self._data
-
-
-def test_find_jnc_cover_takes_volume_1_in_large_size(monkeypatch):
-    monkeypatch.setattr(covers, "_jnc_series_cache", None)
-    cover = "https://cdn.jnc-nina.eu/pub/img/480/webp/01K/A/B/C.jpg"
-
-    def get(url, params=None, headers=None, timeout=None):
-        if url.endswith("/series"):
-            return _JsonResp({"series": [{"title": "Brunhild", "slug": "brunhild"}], "pagination": {"lastPage": True}})
-        assert url.endswith("/series/brunhild/volumes")
-        return _JsonResp({"volumes": [{"number": 2, "cover": {"coverUrl": "x"}},
-                                      {"number": 1, "cover": {"coverUrl": cover}}]})
-
-    monkeypatch.setattr(covers.requests, "get", get)
-    assert covers.find_jnc_cover("Brunhild", "Light Novel") == "https://cdn.jnc-nina.eu/pub/img/960/jpg/01K/A/B/C.jpg"
-    assert covers.find_jnc_cover("Unbekannt", "Light Novel") is None
-
-
-def test_lookup_asks_jnc_first_for_jnc_titles(tmp_data, monkeypatch):
-    monkeypatch.setattr(covers, "find_jnc_cover", lambda titel, typ: "https://cdn/x.jpg")
-    monkeypatch.setattr(covers, "_download_image", lambda url, params=None: b"J" * 2000)
-    monkeypatch.setattr(covers, "find_band1_isbn", lambda *a, **kw: pytest.fail("DNB darf nicht gefragt werden"))
-    info = covers.lookup_and_store("Brunhild", "JNC Nina", "Light Novel")
-    assert info.quelle == covers.QUELLE_JNC
-    assert info.path.read_bytes() == b"J" * 2000
-
-
-def test_lookup_falls_back_to_dnb_when_jnc_has_nothing(tmp_data, monkeypatch):
-    monkeypatch.setattr(covers, "find_jnc_cover", lambda titel, typ: None)
-    monkeypatch.setattr(covers, "find_band1_isbn", lambda *a, **kw: ALBUS_1)
-    monkeypatch.setattr(covers, "download_cover", lambda isbn: b"D" * 2000)
-    assert covers.lookup_and_store("X", "JNC Nina", "Light Novel").quelle == covers.QUELLE_DNB
