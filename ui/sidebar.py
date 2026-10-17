@@ -4,7 +4,8 @@ Die Seitenleiste rechts - wie in Version 1, von oben nach unten:
 Suche, Statistik (Summe im Besitz, Summe gelesen, Differenz, Gelesen-
 Anteil), Anzahl nach Verlag, Anzahl nach Typ (Gesamt / Gelesen / Offen),
 Erscheinungstermine (aktueller, nächster, übernächster Monat und
-ausstehende Termine) und das Live-Log dieser Sitzung.
+ausstehende Termine - ein Klick auf einen Monat öffnet ihn im
+Veröffentlichungskalender) und das Live-Log dieser Sitzung.
 
 Die Zahlen rechnet gallery.py (ohne Oberfläche, getestet).
 """
@@ -21,7 +22,9 @@ ALT_ROW = "#F3F5F8"   # abwechselnde Zeilenfarbe wie setAlternatingRowColors
 
 
 class Sidebar:
-    def __init__(self, search_field: ft.TextField):
+    def __init__(self, search_field: ft.TextField, on_open_month=None):
+        """`on_open_month(offset)` öffnet den Kalender: 0 = aktueller Monat,
+        1 = nächster, 2 = übernächster."""
         self.search_field = search_field
 
         stats = [value_row(label) for label in
@@ -42,8 +45,14 @@ class Sidebar:
                                        size=12, italic=True, color=TEXT_MUTED)
         self.log_view.controls.append(self.log_placeholder)
 
+        def clickable(row, offset):
+            if on_open_month is None:
+                return row
+            return ft.Container(row, on_click=lambda _e: on_open_month(offset), ink=True, border_radius=4,
+                                tooltip="Im Veröffentlichungskalender öffnen")
+
         releases_box = section("Erscheinungstermine", [
-            *[row for row, _v in releases],
+            *[clickable(row, offset) for offset, (row, _v) in enumerate(releases)],
             ft.Divider(height=8),
             ft.Text("Ausstehende Termine", weight=ft.FontWeight.BOLD, size=13),
             overdue_row,
