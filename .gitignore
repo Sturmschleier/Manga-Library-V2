@@ -8,6 +8,8 @@ build/
 dist/
 .venv-build/
 .venv/
+# von PyInstaller beim Bauen erzeugt (Bauanleitung steht in build_exe.py)
+*.spec
 
 # Persönliche Zugangsdaten (Google Drive) – nie einchecken
 credentials.json

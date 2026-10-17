@@ -1,0 +1,81 @@
+# Exakte Versionen für den exe-Build (build.bat) - damit jeder Build dieselben
+# Bibliotheken enthält, egal was gerade im globalen Python installiert ist.
+# Erzeugt am 2026-10-17 mit Python 3.14 unter Windows aus requirements.txt +
+# flet-cli (für "flet pack") + PyInstaller.
+#
+# Aktualisieren (z.B. für neuere Versionen oder ein anderes Python):
+#   rmdir /s /q .venv-build
+#   python -m venv .venv-build
+#   .venv-build\Scripts\python -m pip install -r requirements.txt flet-cli==<Flet-Version> pyinstaller
+#   .venv-build\Scripts\python -m pip freeze > requirements-build.txt
+# danach diesen Kopf wieder einfügen, bauen und die exe kurz testen.
+# flet, flet-desktop und flet-cli immer mit derselben Version.
+
+altgraph==0.17.5
+anyio==4.15.1
+arrow==1.4.0
+binaryornot==0.4.4
+certifi==2026.7.22
+cffi==2.1.1
+chardet==5.2.0
+charset-normalizer==3.5.2
+click==8.5.0
+colorama==0.4.6
+cookiecutter==2.7.1
+cryptography==50.0.2
+flet==1.0.4
+flet-cli==1.0.4
+flet-desktop==1.0.4
+flet-platform-assets==1.0.4
+google-api-core==2.42.0
+google-api-python-client==2.201.0
+google-auth==2.62.0
+google-auth-httplib2==0.4.4
+google-auth-oauthlib==1.5.0
+googleapis-common-protos==1.75.5
+h11==0.16.0
+httpcore==1.0.9
+httplib2==0.32.0
+httpx==0.28.1
+idna==3.20
+jaraco.classes==3.4.0
+jaraco.context==6.1.2
+jaraco.functools==4.6.0
+Jinja2==3.1.6
+keyring==25.7.0
+markdown-it-py==4.2.0
+MarkupSafe==3.0.4
+mdurl==0.1.2
+more-itertools==11.2.1
+msgpack==1.2.3
+oauthlib==4.0.0
+opentelemetry-api==1.45.1
+packaging==26.3
+pefile==2024.8.26
+pillow==13.0.0
+proto-plus==1.29.0
+protobuf==7.36.2
+pyasn1==0.6.4
+pyasn1_modules==0.4.2
+pycparser==3.11
+Pygments==2.21.0
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.8
+pyparsing==3.3.3
+python-dateutil==2.9.0.post0
+python-slugify==9.1.3
+pywin32-ctypes==0.2.3
+PyYAML==6.0.3
+qrcode==8.2
+repath==0.9.0
+requests==2.34.2
+requests-oauthlib==2.0.0
+rich==15.0.0
+setuptools==84.0.0
+six==1.17.0
+text-unidecode==1.3
+typing_extensions==4.16.0
+tzdata==2026.5
+uritemplate==4.2.0
+urllib3==2.8.0
+watchdog==6.0.0

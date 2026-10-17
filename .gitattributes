@@ -1,0 +1,2 @@
+# Windows-Batchdateien brauchen CRLF, sonst springt "goto" falsch
+*.bat text eol=crlf

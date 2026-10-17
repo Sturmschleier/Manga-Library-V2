@@ -46,7 +46,7 @@ dasselbe Format und lässt sich also übernehmen.
 4. Übrige Funktionen aus Version 1: Bearbeiten/Neu/Löschen, Bestellungen
    aus E-Mails, ISBN-Abgleich und Bestellliste, VÖ-Termine von
    buchhandel.de, Google-Drive-Sicherung, CSV-Import/-Export
-5. exe-Build und Release
+5. Release auf GitHub (exe-Build per `build.bat` gibt es schon)
 
 ## Start (Entwicklung)
 
@@ -68,6 +68,23 @@ Tests und Linter:
 .venv\Scripts\python -m pytest -q
 .venv\Scripts\python -m ruff check .
 ```
+
+## exe bauen
+
+```bash
+build.bat
+```
+
+Legt beim ersten Mal die Build-Umgebung `.venv-build` mit den festen
+Versionen aus `requirements-build.txt` an und baut mit `flet pack` die
+eigenständige `dist\MangaLibraryV2.exe` (ca. 75 MB, enthält den
+Flet-Programmfenster-Client). Was in die exe kommt, steht in
+`build_exe.py`. Beim ersten Start entpackt die exe den Client einmalig nach
+`%USERPROFILE%\.flet\client`.
+
+`Build_work.bat` baut ebenso und kopiert die exe danach nach `..\WorkV2`
+(Arbeitsordner mit den echten Daten). Die Daten dort bleiben unberührt;
+eine laufende `MangaLibraryV2.exe` dort vorher beenden.
 
 ## Aufbau
 
