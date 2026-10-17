@@ -1,13 +1,20 @@
 """
 ui/tile.py
-Eine Kachel der Kachelansicht: Cover von Band 1, Titel, Verlag/Typ, Besitz
-und Gelesen mit je einem "+1"-Knopf, nächster Termin. Der Rahmen zeigt den
-Status (Beendet/TBA/NA/Gestoppt, siehe gallery.STATUS_BORDER_COLORS).
+Eine Kachel der Kachelansicht - alle Kacheln sind gleich groß: Die
+Textzeilen haben feste Höhen, das Cover wird ganz und unverzerrt in die
+Fläche darüber eingepasst.
 
-Ohne Cover (noch nicht gesucht, nicht gefunden oder entfernt) steht auf der
-Cover-Fläche der Titel auf der Verlagsfarbe (colors.verlag_color). Das
-Menü oben links auf dem Cover sucht erneut, nimmt ein eigenes Bild oder
-entfernt das Cover.
+Inhalt: Cover von Band 1 (ohne Cover der Titel auf der Verlagsfarbe),
+Titel, Verlag (Verlagsfarbe) und Typ, Komplett/Beendet (grün/rot wie in
+Version 1), Besitz und Gelesen mit je einem "+1"-Knopf und dem Rückstand,
+VÖ +1 mit seiner Statusfarbe (Beendet/TBA/Gestoppt/NA; neue, noch nicht
+gespeicherte Termine rot). Der Rahmen zeigt den Status
+(gallery.STATUS_BORDER_COLORS), Bestellt/Abholbereit stehen als Schild auf
+dem Cover. Die Farben lassen sich wie in Version 1 unter "Konfigurieren →
+Farben" abschalten (`colors_enabled`).
+
+Bedienung: Klick wählt die Kachel aus, Doppelklick bearbeitet, Rechtsklick
+öffnet das Kontextmenü.
 """
 
 from collections.abc import Callable
@@ -17,147 +24,163 @@ from typing import Optional
 import flet as ft
 
 import colors
+import database as db
 import gallery
+import logic
 
-TILE_WIDTH = 210
+TILE_WIDTH = 220
+COVER_RATIO = 0.72          # Breite : Höhe eines typischen Manga-Covers
+DETAILS_HEIGHT = 198        # feste Höhe aller Zeilen unter dem Cover
+TILE_ASPECT = TILE_WIDTH / (TILE_WIDTH / COVER_RATIO + DETAILS_HEIGHT)
 BORDER_WIDTH = 4
 RADIUS = 12
 TEXT_DARK = colors.DEFAULT_TEXT_COLOR
 TEXT_MUTED = "#5F6673"
+NEUTRAL_CHIP = "#E9ECF1"
+SELECTED_GLOW = "#3B5BA9"
 
 
 @dataclass
 class TileActions:
-    """Was die Knöpfe einer Kachel auslösen - jeweils mit der ID des Eintrags."""
+    """Was eine Kachel auslösen kann - jeweils mit der ID des Eintrags."""
+    select: Callable
+    edit: Callable
     plus_baende: Callable
     plus_gelesen: Callable
-    cover_search: Callable
-    cover_pick: Callable
-    cover_remove: Callable
+    context_items: Callable   # row_id -> [ft.PopupMenuItem] für das Rechtsklickmenü
 
 
-def _placeholder(entry: dict) -> ft.Control:
-    title = (entry.get("titel") or "(ohne Titel)").strip()
+def _enabled(colors_enabled: dict, key: str) -> bool:
+    return (colors_enabled or {}).get(key, True)
+
+
+def _chip(text: str, bgcolor: str, color: str = TEXT_DARK, tooltip: Optional[str] = None,
+          bold: bool = False, expand=None) -> ft.Control:
     return ft.Container(
-        content=ft.Text(
-            title, size=17, weight=ft.FontWeight.BOLD, color=TEXT_DARK,
-            text_align=ft.TextAlign.CENTER, max_lines=5, overflow=ft.TextOverflow.ELLIPSIS,
-        ),
-        bgcolor=colors.verlag_color(entry.get("verlag") or "") or "#E3E6EB",
-        alignment=ft.Alignment.CENTER,
-        padding=12,
-        expand=True,
+        ft.Text(text, size=11, color=color, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
+                weight=ft.FontWeight.BOLD if bold else None),
+        bgcolor=bgcolor, border_radius=6, padding=ft.Padding.symmetric(horizontal=6, vertical=2),
+        tooltip=tooltip, expand=expand,
     )
 
 
-def _badge(text: str, bgcolor: str, color: str = TEXT_DARK, **position) -> ft.Control:
-    return ft.Container(
-        content=ft.Text(text, size=11, weight=ft.FontWeight.BOLD, color=color),
-        bgcolor=bgcolor,
-        padding=ft.Padding.symmetric(horizontal=8, vertical=3),
-        border_radius=8,
-        **position,
-    )
-
-
-def _cover_menu(row_id, has_cover: bool, actions: TileActions) -> ft.Control:
-    items = [
-        ft.PopupMenuItem(content="Cover erneut suchen", icon=ft.Icons.IMAGE_SEARCH,
-                         on_click=lambda _e: actions.cover_search(row_id)),
-        ft.PopupMenuItem(content="Eigenes Bild wählen …", icon=ft.Icons.FOLDER_OPEN,
-                         on_click=lambda _e: actions.cover_pick(row_id)),
-    ]
-    if has_cover:
-        items.append(ft.PopupMenuItem(content="Cover entfernen", icon=ft.Icons.HIDE_IMAGE,
-                                      on_click=lambda _e: actions.cover_remove(row_id)))
-    return ft.Container(
-        content=ft.PopupMenuButton(icon=ft.Icons.MORE_VERT, icon_size=18, items=items, tooltip="Cover"),
-        bgcolor="#D9FFFFFF",   # Weiß, leicht durchsichtig (Flutter: #AARRGGBB)
-        border_radius=16,
-        width=32, height=32,
-        left=4, top=4,
-    )
-
-
-def _cover(entry: dict, status: str, image: Optional[bytes], actions: TileActions) -> ft.Control:
+def _cover(entry: dict, status: str, image, colors_enabled: dict) -> ft.Control:
     if image:
-        # als Hintergrundbild, damit es die ganze Fläche füllt (ft.Image
-        # behält seine eigene Breite)
-        face = ft.Container(image=ft.DecorationImage(src=image, fit=ft.BoxFit.COVER), expand=True,
-                            bgcolor="#E3E6EB")
+        face = ft.Container(image=ft.DecorationImage(src=image, fit=ft.BoxFit.CONTAIN),
+                            bgcolor="#EEF0F3", expand=True)
     else:
-        face = _placeholder(entry)
+        face = ft.Container(
+            ft.Text((entry.get("titel") or "(ohne Titel)").strip(), size=17, weight=ft.FontWeight.BOLD,
+                    color=TEXT_DARK, text_align=ft.TextAlign.CENTER, max_lines=6,
+                    overflow=ft.TextOverflow.ELLIPSIS),
+            bgcolor=colors.verlag_color(entry.get("verlag") or "") or "#E3E6EB",
+            alignment=ft.Alignment.CENTER, padding=12, expand=True,
+        )
     layers = [ft.Container(face, expand=True, clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
                            border_radius=ft.BorderRadius.only(top_left=RADIUS - BORDER_WIDTH,
                                                               top_right=RADIUS - BORDER_WIDTH))]
     if status != gallery.STATUS_LAUFEND:
-        layers.append(_badge(gallery.STATUS_LABELS[status], gallery.STATUS_BORDER_COLORS[status],
-                             "#FFFFFF", right=6, top=6))
+        layers.append(ft.Container(_chip(gallery.STATUS_LABELS[status], gallery.STATUS_BORDER_COLORS[status],
+                                         "#FFFFFF", bold=True), right=6, top=6))
     angekommen = (entry.get("angekommen") or "").strip()
     bestellt = (entry.get("bestellt") or "").strip()
-    if angekommen:
-        layers.append(_badge(f"Band {angekommen} abholbereit", colors.ANGEKOMMEN_COLOR, left=6, bottom=6))
-    elif bestellt:
-        layers.append(_badge(f"Band {bestellt} bestellt", colors.BESTELLT_COLOR, left=6, bottom=6))
-    layers.append(_cover_menu(entry.get("id"), bool(image), actions))
+    if angekommen and _enabled(colors_enabled, "angekommen"):
+        layers.append(ft.Container(_chip(f"Band {angekommen} abholbereit", colors.ANGEKOMMEN_COLOR, bold=True),
+                                   left=6, bottom=6))
+    elif bestellt and _enabled(colors_enabled, "bestellt"):
+        layers.append(ft.Container(_chip(f"Band {bestellt} bestellt", colors.BESTELLT_COLOR, bold=True),
+                                   left=6, bottom=6))
     return ft.Stack(layers, expand=True)
 
 
-def _counter(label: str, value: str, tooltip: str, on_plus: Callable) -> ft.Control:
+def _counter(label: str, value: str, extra: str, tooltip: str, on_plus: Callable) -> ft.Control:
     return ft.Row(
         [
-            ft.Text(label, size=13, color=TEXT_MUTED, width=62),
-            ft.Text(value or "–", size=15, weight=ft.FontWeight.BOLD, color=TEXT_DARK, expand=True),
-            ft.IconButton(
-                icon=ft.Icons.ADD_CIRCLE_OUTLINE, icon_size=22, tooltip=tooltip, on_click=on_plus,
-                style=ft.ButtonStyle(padding=2), icon_color="#3B5BA9",
-            ),
+            ft.Text(label, size=13, color=TEXT_MUTED, width=58),
+            ft.Text(value or "–", size=15, weight=ft.FontWeight.BOLD, color=TEXT_DARK),
+            ft.Text(extra, size=11, color=TEXT_MUTED, expand=True, max_lines=1),
+            ft.IconButton(icon=ft.Icons.ADD_CIRCLE_OUTLINE, icon_size=22, tooltip=tooltip, on_click=on_plus,
+                          style=ft.ButtonStyle(padding=2), icon_color="#3B5BA9"),
         ],
-        spacing=4,
-        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        height=34,
+        spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER, height=30,
     )
 
 
-def build_tile(entry: dict, image: Optional[bytes], actions: TileActions) -> ft.Control:
-    """Baut die Kachel zu einem Eintrag; `image` ist das Cover (Bilddaten)
-    oder None für den Platzhalter."""
+def _ja_nein_chip(label: str, value: str, enabled: bool) -> ft.Control:
+    value = (value or "").strip()
+    color = colors.ja_nein_color(value) if enabled else None
+    return _chip(f"{label}: {value or '–'}", color or NEUTRAL_CHIP, tooltip=f"{label}: {value or 'nicht angegeben'}")
+
+
+def _voe_row(entry: dict, colors_enabled: dict) -> ft.Control:
+    voe1 = (entry.get("voe_1") or "").strip()
+    new_columns = logic.new_value_columns(entry)
+    bg = (colors.voe1_color(voe1) if _enabled(colors_enabled, "voe1") else None) or NEUTRAL_CHIP
+    text_color = colors.NEW_VALUE_TEXT_COLOR if "voe_1" in new_columns else TEXT_DARK
+    tooltip_lines = [f"{db.LABELS[c]}: {(entry.get(c) or '').strip() or '–'}"
+                     + ("  (neu, noch nicht gespeichert)" if c in new_columns else "") for c in db.VOE_COLUMNS]
+    more = [c for c in db.VOE_COLUMNS[1:] if (entry.get(c) or "").strip()]
+    return ft.Row(
+        [
+            ft.Icon(ft.Icons.EVENT, size=16, color=TEXT_MUTED),
+            _chip(voe1 or "–", bg, text_color, bold="voe_1" in new_columns, expand=True),
+            ft.Text(f"+{len(more)}" if more else "", size=11,
+                    color=colors.NEW_VALUE_TEXT_COLOR if set(more) & set(new_columns) else TEXT_MUTED),
+        ],
+        spacing=4, height=24, tooltip="\n".join(tooltip_lines),
+    )
+
+
+def build_tile(entry: dict, image, actions: TileActions, colors_enabled: dict,
+               selected: bool = False) -> ft.Control:
+    """Baut die Kachel zu einem Eintrag; `image` ist das Cover (Dateipfad
+    oder Bilddaten) oder None für den Platzhalter."""
     status = gallery.status_of(entry)
     row_id = entry.get("id")
     title = (entry.get("titel") or "(ohne Titel)").strip()
-    sub = " · ".join(v for v in ((entry.get("verlag") or "").strip(), (entry.get("typ") or "").strip()) if v)
-    release = gallery.next_release(entry)
+    verlag = (entry.get("verlag") or "").strip()
+    typ = (entry.get("typ") or "").strip()
+    rest = gallery.ruckstand(entry)
+    verlag_bg = (colors.verlag_color(verlag) if _enabled(colors_enabled, "verlag") else None) or NEUTRAL_CHIP
 
     details = ft.Column(
         [
-            ft.Text(title, size=14, weight=ft.FontWeight.BOLD, color=TEXT_DARK, max_lines=2,
-                    overflow=ft.TextOverflow.ELLIPSIS, tooltip=title),
-            ft.Text(sub or " ", size=12, color=TEXT_MUTED, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-            _counter("Besitz", entry.get("baende_bis") or "", "+1 Band gekauft",
+            ft.Container(ft.Text(title, size=14, weight=ft.FontWeight.BOLD, color=TEXT_DARK, max_lines=2,
+                                 overflow=ft.TextOverflow.ELLIPSIS), height=38, tooltip=title),
+            ft.Row([_chip(verlag or "–", verlag_bg, tooltip=f"Verlag: {verlag or '–'}"),
+                    ft.Text(typ, size=12, color=TEXT_MUTED, max_lines=1, expand=True)], spacing=6, height=22),
+            ft.Row([_ja_nein_chip("Komplett", entry.get("komplett"), _enabled(colors_enabled, "komplett_beendet")),
+                    _ja_nein_chip("Beendet", entry.get("beendet"), _enabled(colors_enabled, "komplett_beendet"))],
+                   spacing=6, height=22),
+            _counter("Besitz", entry.get("baende_bis") or "", "", "+1 Band gekauft",
                      lambda _e: actions.plus_baende(row_id)),
-            _counter("Gelesen", entry.get("gelesen_bis") or "", "+1 Band gelesen",
+            _counter("Gelesen", entry.get("gelesen_bis") or "",
+                     f"({rest} offen)" if rest else "", "+1 Band gelesen",
                      lambda _e: actions.plus_gelesen(row_id)),
-            ft.Row(
-                [
-                    ft.Icon(ft.Icons.EVENT, size=16, color=TEXT_MUTED),
-                    ft.Text(release or "–", size=12, color=TEXT_DARK if release else TEXT_MUTED,
-                            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, expand=True),
-                ],
-                spacing=4,
-                tooltip="Nächster Termin (VÖ +1)",
-            ),
+            _voe_row(entry, colors_enabled),
         ],
         spacing=2,
     )
 
-    return ft.Container(
+    card = ft.Container(
         content=ft.Column(
-            [_cover(entry, status, image, actions),
-             ft.Container(details, padding=ft.Padding.only(left=10, right=4, bottom=8))],
-            spacing=6,
+            [_cover(entry, status, image, colors_enabled),
+             ft.Container(details, height=DETAILS_HEIGHT, padding=ft.Padding.only(left=10, right=4, bottom=6, top=4))],
+            spacing=0,
         ),
         border=ft.Border.all(BORDER_WIDTH, gallery.STATUS_BORDER_COLORS[status]),
         border_radius=RADIUS,
         bgcolor="#FFFFFF",
+        shadow=ft.BoxShadow(spread_radius=3, blur_radius=6, color=SELECTED_GLOW) if selected else None,
+    )
+    return ft.ContextMenu(
+        content=ft.GestureDetector(
+            content=card,
+            on_tap=lambda _e: actions.select(row_id),
+            on_double_tap=lambda _e: actions.edit(row_id),
+            mouse_cursor=ft.MouseCursor.CLICK,
+        ),
+        secondary_items=actions.context_items(row_id),
+        key=ft.ScrollKey(f"t{row_id}"),
         data=row_id,
     )

@@ -34,6 +34,16 @@ def _record(titel, band, year, isbn="", series=None, publisher="Carlsen"):
     return ET.fromstring(xml + "</record>")
 
 
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch):
+    """Kein Test darf DNB oder VLB wirklich fragen."""
+    def blocked(*args, **kwargs):
+        raise AssertionError("echte Netzanfrage im Test")
+
+    monkeypatch.setattr(covers.requests, "get", blocked)
+    monkeypatch.setattr(covers.vlb_lookup.requests, "get", blocked)
+
+
 @pytest.fixture
 def tmp_data(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DB_FILE", tmp_path / "manga_library.db")
@@ -180,6 +190,7 @@ def test_lookup_and_store_saves_image_and_row(tmp_data, monkeypatch):
 def test_lookup_and_store_remembers_failure(tmp_data, monkeypatch):
     monkeypatch.setattr(covers, "find_band1_isbn", lambda *a, **kw: ALBUS_1)
     monkeypatch.setattr(covers, "download_cover", lambda isbn: None)
+    monkeypatch.setattr(covers, "download_vlb_cover", lambda isbn: None)
     info = covers.lookup_and_store("A", "V", "Manga")
     assert (info.quelle, info.isbn, info.path) == (covers.QUELLE_KEINE, ALBUS_1, None)
     assert not covers.needs_lookup(covers.load_all()["A"])
@@ -225,3 +236,78 @@ class _Resp:
 def test_download_cover_accepts_only_real_images(monkeypatch, resp, ok):
     monkeypatch.setattr(covers.requests, "get", lambda *a, **kw: resp)
     assert (covers.download_cover(ALBUS_1) is not None) == ok
+
+
+# ------------------------------------------------------ VLB-Ausweichlösung
+
+def _vlb_product(title, isbn, datum="09.03.2015", publisher="TOKYOPOP GmbH"):
+    return {"title": title, "identifier": isbn, "publicationDate": datum, "publisher": publisher,
+            "productType": "pbook"}
+
+
+def test_find_band1_vlb_picks_band_1_of_the_right_edition(monkeypatch):
+    calls = []
+
+    def fetch(query, session=None, newest_first=True):
+        calls.append((query, newest_first))
+        return [_vlb_product("Accel World 01", PARTY_1), _vlb_product("Accel World - Novel 01", ALBUS_1),
+                _vlb_product("Accel World - Novel 02", ONE_PIECE_1, "08.06.2015")]
+
+    monkeypatch.setattr(covers.vlb_lookup, "fetch_products", fetch)
+    assert covers.find_band1_vlb("Accel World – Light Novel", "Tokyopop", "Light Novel") == ALBUS_1
+    assert covers.find_band1_vlb("Accel World", "Tokyopop", "Manga") == PARTY_1
+    assert calls[0] == ("(ti=Accel World) und pt=pbook", False)   # ohne Jahresgrenze, älteste zuerst
+
+
+def test_find_band1_vlb_retries_without_subtitle(monkeypatch):
+    queries = []
+
+    def fetch(query, session=None, newest_first=True):
+        queries.append(query)
+        return [_vlb_product("A Wild Last Boss Appeared! 01", ALBUS_1)] if len(queries) == 2 else []
+
+    monkeypatch.setattr(covers.vlb_lookup, "fetch_products", fetch)
+    monkeypatch.setattr(covers.vlb_lookup, "REQUEST_DELAY_SECONDS", 0)
+    isbn = covers.find_band1_vlb("A Wild Last Boss Appeared! – Der Overlord", "Tokyopop", "Manga")
+    assert isbn == ALBUS_1
+    assert queries[1] == "(ti=A Wild Last Boss Appeared!) und pt=pbook"
+
+
+def test_lookup_uses_vlb_image_for_dnb_isbn(tmp_data, monkeypatch):
+    monkeypatch.setattr(covers, "find_band1_isbn", lambda *a, **kw: ALBUS_1)
+    monkeypatch.setattr(covers, "download_cover", lambda isbn: None)
+    monkeypatch.setattr(covers, "download_vlb_cover", lambda isbn: b"VLB" * 500)
+    info = covers.lookup_and_store("A", "V", "Manga")
+    assert (info.quelle, info.isbn) == (covers.QUELLE_VLB, ALBUS_1)
+    assert info.path.read_bytes() == b"VLB" * 500
+
+
+def test_lookup_searches_vlb_when_dnb_has_no_isbn(tmp_data, monkeypatch):
+    monkeypatch.setattr(covers, "find_band1_isbn", lambda *a, **kw: None)
+    monkeypatch.setattr(covers, "find_band1_vlb", lambda *a, **kw: ONE_PIECE_1)
+    monkeypatch.setattr(covers, "download_vlb_cover", lambda isbn: b"V" * 2000)
+    info = covers.lookup_and_store("A", "V", "Manga")
+    assert (info.quelle, info.isbn) == (covers.QUELLE_VLB, ONE_PIECE_1)
+    assert not covers.needs_lookup(info)
+
+
+def test_lookup_without_vlb(tmp_data, monkeypatch):
+    monkeypatch.setattr(covers, "find_band1_isbn", lambda *a, **kw: None)
+    monkeypatch.setattr(covers, "find_band1_vlb", lambda *a, **kw: pytest.fail("VLB darf nicht gefragt werden"))
+    assert covers.lookup_and_store("A", use_vlb=False).quelle == covers.QUELLE_KEINE
+
+
+def test_refresh_targets(tmp_data):
+    found = tmp_data / "covers" / "x.jpg"
+    found.parent.mkdir()
+    found.write_bytes(b"x")
+    infos = {
+        "Gefunden": covers.CoverInfo("Gefunden", datei="x.jpg", quelle=covers.QUELLE_VLB),
+        "Eigen": covers.CoverInfo("Eigen", datei="x.jpg", quelle=covers.QUELLE_EIGEN),
+        "Keins": covers.CoverInfo("Keins", quelle=covers.QUELLE_KEINE),
+        "Entfernt": covers.CoverInfo("Entfernt", quelle=covers.QUELLE_ENTFERNT),
+    }
+    entries = [{"titel": t} for t in ("Gefunden", "Eigen", "Keins", "Entfernt", "Neu", "Neu")]
+    assert [e["titel"] for e in covers.refresh_targets(entries, infos)] == ["Keins", "Entfernt", "Neu"]
+    assert [e["titel"] for e in covers.refresh_targets(entries, infos, only_missing=False)] == [
+        "Gefunden", "Keins", "Entfernt", "Neu"]

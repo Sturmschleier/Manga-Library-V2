@@ -1,38 +1,75 @@
 """
 ui/app.py
-Das Hauptfenster: Werkzeugleiste (Rückgängig, Wiederholen, Speichern),
-Filterleiste, Kachelansicht und Farblegende.
+Das Hauptfenster - aufgebaut wie Version 1, nur mit Kacheln statt Tabelle:
 
-Cover (covers.py) werden im Hintergrund gesucht: nach dem Start einmal für
-alle Titel ohne Cover, Titel für Titel, damit die DNB nicht überlastet
-wird. Jede fertige Kachel wird sofort neu gezeichnet.
+- Menüleiste "Datei", "Konfigurieren", "Hilfe" mit allen Einträgen aus
+  Version 1 (dazu "Cover neu suchen …")
+- Werkzeugleiste: Rückgängig, Wiederholen, Speichern, Google Drive, ISBN-
+  Abgleich, VÖ-Termine, Filter (Verlag, VÖ +1, Bestellung, Typ), Sortierung
+- Kachelansicht (Klick wählt aus, Doppelklick bearbeitet, Rechtsklick öffnet
+  das Kontextmenü)
+- Seitenleiste rechts (ui/sidebar.py): Suche, Statistik, Verlage, Typen,
+  Erscheinungstermine, Live-Log
+- Statuszeile mit Anzahl, ungespeicherten Änderungen, Cover-Suche und
+  Farblegende
 
-Wie in Version 1 bleiben alle Änderungen (z.B. die "+1"-Knöpfe) im
-Zwischenspeicher (library.LibraryBuffer), bis gespeichert wird; vor dem
-Speichern wird die Datenbank nach BACKUP/ gesichert.
+Wie in Version 1 wirken alle Änderungen zuerst nur auf den Zwischenspeicher
+(library.LibraryBuffer, mit Rückgängig/Wiederholen); erst "Speichern"
+schreibt in die Datenbank, vorher wird sie nach BACKUP/ gesichert.
+
+Die Aktionen stehen thematisch getrennt in Mixins: ui/actions_data.py (CSV,
+Bestellungen, Google Drive), ui/actions_lookup.py (ISBN, VÖ-Termine,
+buchhandel.de), ui/actions_covers.py (Cover).
 """
 
+import inspect
 import threading
-import time
-from pathlib import Path
 
 import flet as ft
 
 import changelog
+import colors
 import config
-import covers
 import database as db
 import gallery
-import isbn_lookup
 import logic
 from library import LibraryBuffer
 from ui import APP_TITLE
-from ui.tile import TILE_WIDTH, TileActions, build_tile
+from ui.actions_covers import CoverActions
+from ui.actions_data import DataActions
+from ui.actions_lookup import LookupActions
+from ui.common import TEXT_MUTED, alert, close_dialog, confirm, open_path
+from ui.sidebar import Sidebar
+from ui.tile import TILE_ASPECT, TILE_WIDTH, TileActions, build_tile
 
 PAGE_BG = "#F2F4F7"
+MENU_WIDTH = 390   # Menüeinträge sonst so schmal wie die Menüleiste - Texte würden abgeschnitten
+SEARCH_DELAY_SECONDS = 0.2   # Suche erst nach kurzer Tipp-Pause auswerten
+COLOR_OPTIONS = (
+    ("voe1", "VÖ +1 (Beendet/TBA/Gestoppt/NA)"),
+    ("komplett_beendet", "Komplett/Beendet"),
+    ("verlag", "Verlag"),
+    ("bestellt", "Titel bestellt (hellblau)"),
+    ("angekommen", "Titel angekommen (abholbereit)"),
+)
 
 
-class MangaApp:
+def _separator():
+    """Senkrechter Trennstrich der Werkzeugleiste (feste Höhe - ein
+    VerticalDivider hätte in einer umbrechenden Zeile keine)."""
+    return ft.Container(width=1, height=28, bgcolor="#C9CED6", margin=ft.Margin.symmetric(horizontal=4))
+
+
+def _handler(func):
+    """on_click-Handler für eine Funktion ohne Argumente (auch async)."""
+    if inspect.iscoroutinefunction(func):
+        async def run_async(_e=None):
+            await func()
+        return run_async
+    return lambda _e=None: func()
+
+
+class MangaApp(CoverActions, DataActions, LookupActions):
     def __init__(self, page: ft.Page, on_closed=None):
         self.page = page
         self.on_closed = on_closed   # wird aufgerufen, sobald das Fenster endgültig geschlossen wird
@@ -43,155 +80,369 @@ class MangaApp:
         changelog.prune_order_logs()
         db.init_db()
         self.buffer = LibraryBuffer(db.load_all())   # Zwischenspeicher bis "Speichern"
-        covers.ensure_table()
-        self.covers = covers.load_all()   # {titel: CoverInfo}
-        self._images = {}                 # {titel: Bilddaten} - jede Datei nur einmal lesen
-        self._ui_lock = threading.RLock()  # Kacheln werden auch aus dem Such-Thread neu gezeichnet
+        self._init_covers()
+        self._ui_lock = threading.RLock()   # Kacheln werden auch aus Hintergrund-Threads neu gezeichnet
         self._closing = False
-        self.actions = TileActions(
-            plus_baende=self.increment_baende, plus_gelesen=self.increment_gelesen,
-            cover_search=self.cover_search, cover_pick=self.cover_pick, cover_remove=self.cover_remove,
+        self._search_timer = None
+        self._mail_passwords = {}           # nur im Arbeitsspeicher, nie auf Platte
+        self.selected_id = None
+        self.sort_column = "titel"
+        self.sort_reverse = False
+        self.colors_enabled = config.get_dict("colors_enabled")
+        self.tile_actions = TileActions(
+            select=self.select, edit=self.edit_entry, plus_baende=self.increment_baende,
+            plus_gelesen=self.increment_gelesen, context_items=self._context_items,
         )
 
         page.title = APP_TITLE
         page.bgcolor = PAGE_BG
         page.theme_mode = ft.ThemeMode.LIGHT
-        page.padding = 12
-        page.window.width = 1400
+        page.padding = 8
+        page.window.width = 1450
         page.window.height = 900
-        page.window.min_width = 700
-        page.window.min_height = 500
+        page.window.min_width = 900
+        page.window.min_height = 560
         page.window.prevent_close = True
         page.window.on_event = self._on_window_event
         page.on_keyboard_event = self._on_key
+        page.on_resize = lambda _e: self._apply_sidebar_width()
 
         self._build()
         self.refresh()
         if config.get_bool("cover_auto_lookup", True):
-            page.run_thread(self._cover_worker)
-        if self.config_problem:
-            self._alert(
-                "Konfiguration",
-                f"Die Datei config.json ist beschädigt ({self.config_problem}).\n\n"
-                "Es gelten vorerst die Standardwerte.",
-            )
+            import covers
 
-    # ------------------------------------------------------------ Aufbau
+            self.start_cover_job(covers.pending(self.buffer.data, self.covers), startup=True)
+        if self.config_problem:
+            alert(page, "Konfiguration",
+                  f"Die Datei config.json ist beschädigt ({self.config_problem}).\n\n"
+                  "Es gelten vorerst die Standardwerte. Sobald eine Einstellung geändert wird, "
+                  "wird die beschädigte Datei als config.json.defekt aufbewahrt.")
+
+    # ================================================================ Aufbau
 
     def _build(self):
-        self.undo_btn = ft.IconButton(ft.Icons.UNDO, tooltip="Rückgängig (Strg+Z)", on_click=lambda _e: self.undo())
-        self.redo_btn = ft.IconButton(ft.Icons.REDO, tooltip="Wiederholen (Strg+Y)", on_click=lambda _e: self.redo())
-        self.save_btn = ft.FilledButton("Speichern", icon=ft.Icons.SAVE, on_click=lambda _e: self.save())
-        self.page.appbar = ft.AppBar(
-            title=ft.Text(APP_TITLE, weight=ft.FontWeight.BOLD),
-            bgcolor="#FFFFFF",
-            actions=[self.undo_btn, self.redo_btn, ft.Container(self.save_btn, padding=ft.Padding.only(right=12))],
+        self.menubar = self._build_menu_bar()
+
+        self.undo_btn = ft.OutlinedButton("Rückgängig", icon=ft.Icons.UNDO, on_click=_handler(self.undo),
+                                          tooltip="Letzte Änderung rückgängig machen (Strg+Z)")
+        self.redo_btn = ft.OutlinedButton("Wiederholen", icon=ft.Icons.REDO, on_click=_handler(self.redo),
+                                          tooltip="Rückgängig gemachte Änderung wiederholen (Strg+Y)")
+        self.save_btn = ft.FilledButton(
+            "Speichern", icon=ft.Icons.SAVE, on_click=_handler(self.save),
+            style=ft.ButtonStyle(bgcolor="#4CAF50", color="#FFFFFF"),
+            tooltip="Alle Änderungen dauerhaft in der Datenbank speichern (Strg+S)",
+        )
+        upload_btn = ft.OutlinedButton("Zu Google Drive sichern", icon=ft.Icons.CLOUD_UPLOAD,
+                                       on_click=_handler(self.drive_upload))
+        isbn_btn = ft.OutlinedButton("ISBN-Abgleich / Bestellliste", icon=ft.Icons.SEARCH,
+                                     on_click=_handler(self.open_isbn_lookup))
+        vlb_btn = ft.OutlinedButton(
+            "VÖ-Termine holen", icon=ft.Icons.EVENT, on_click=_handler(self.start_vlb_lookup),
+            tooltip="Fragt bei buchhandel.de die Termine neuer Bände ab und trägt sie rot in VÖ +1 bis VÖ +3 ein "
+                    "(gültig erst nach Speichern)",
         )
 
-        self.search = ft.TextField(
-            hint_text="Suche (Titel, Verlag, Kommentar)", prefix_icon=ft.Icons.SEARCH, dense=True,
-            width=320, on_change=lambda _e: self.refresh(), bgcolor="#FFFFFF",
+        self.verlag_filter = self._dropdown("Verlag", [gallery.FILTER_ALL], 190)
+        self.voe1_filter = self._dropdown("VÖ +1", gallery.VOE1_FILTER_OPTIONS, 140)
+        self.order_filter = self._dropdown("Bestellung", list(logic.ORDER_FILTER_OPTIONS), 200)
+        self.order_filter.tooltip = ("Nach Bestell-Markierung filtern:\nBestellt = Schild „bestellt“, "
+                                     "Angekommen = Schild „abholbereit“,\nNicht bestellt = keine der beiden.")
+        self.typ_filter = self._dropdown("Typ", [gallery.FILTER_ALL], 140)
+        self.sort_choice = ft.Dropdown(
+            label="Sortierung", value="titel", width=210, dense=True,
+            options=[ft.DropdownOption(key=k, text=label) for k, label in gallery.SORT_OPTIONS],
+            on_select=lambda _e: self._refresh_tiles(),
         )
-        self.typ_filter = self._dropdown("Typ", [gallery.FILTER_ALL])
-        self.status_filter = self._dropdown("Status", [gallery.FILTER_ALL, *gallery.STATUS_LABELS.values()])
-        self.sort_choice = self._dropdown("Sortierung", list(gallery.SORT_OPTIONS), width=230)
-        self.count_text = ft.Text(color="#5F6673")
-        self.cover_status = ft.Text(color="#5F6673", size=12, visible=False)
+        self.sort_dir_btn = ft.IconButton(ft.Icons.ARROW_UPWARD, tooltip="Aufsteigend - klicken zum Umkehren",
+                                          on_click=_handler(self._toggle_sort_direction))
+        reset_btn = ft.TextButton("Filter zurücksetzen", on_click=_handler(self._reset_filters))
+
+        toolbar = ft.Row(
+            [self.undo_btn, self.redo_btn, _separator(), self.save_btn, _separator(),
+             upload_btn, _separator(), isbn_btn, vlb_btn],
+            spacing=6, wrap=True, vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
         filters = ft.Row(
-            [self.search, self.typ_filter, self.status_filter, self.sort_choice, self.count_text,
-             self.cover_status],
-            spacing=12, wrap=True, vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            [self.verlag_filter, self.voe1_filter, self.order_filter, self.typ_filter, self.sort_choice,
+             self.sort_dir_btn, reset_btn],
+            spacing=8, wrap=True, vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
 
         self.grid = ft.GridView(
-            expand=True, max_extent=TILE_WIDTH, child_aspect_ratio=0.5, spacing=14, run_spacing=14,
-            padding=ft.Padding.only(top=4, bottom=12, right=8),
+            expand=True, max_extent=TILE_WIDTH, child_aspect_ratio=TILE_ASPECT, spacing=14, run_spacing=14,
+            padding=ft.Padding.only(top=4, bottom=12, right=8, left=4),
+        )
+        self.search_field = ft.TextField(dense=True, expand=True, prefix_icon=ft.Icons.SEARCH, bgcolor="#FFFFFF",
+                                         on_change=self._on_search_change)
+        self.sidebar = Sidebar(self.search_field)
+        self.sidebar_box = ft.Container(self.sidebar.control, width=300)
+
+        self.status_text = ft.Text(size=12)
+        self.cover_status = ft.Text(size=12, color=TEXT_MUTED, visible=False)
+        self.cover_cancel_btn = ft.TextButton("Abbrechen", visible=False, on_click=_handler(self.cancel_cover_job),
+                                              style=ft.ButtonStyle(padding=4))
+        footer = ft.Row(
+            [self.status_text, self.cover_status, self.cover_cancel_btn,
+             ft.Container(self._build_legend(), expand=True, alignment=ft.Alignment.CENTER_RIGHT)],
+            spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
 
-        self.legend = ft.Row(spacing=18, wrap=True)
-        self.page.add(ft.Column([filters, self.grid, self.legend], expand=True, spacing=10))
+        self.page.add(ft.Column(
+            [
+                self.menubar,
+                toolbar,
+                filters,
+                ft.Row([ft.Column([self.grid], expand=True), self.sidebar_box], expand=True,
+                       vertical_alignment=ft.CrossAxisAlignment.STRETCH),
+                footer,
+            ],
+            expand=True, spacing=6,
+        ))
+        self._apply_sidebar_width()
 
-    def _dropdown(self, label, options, width=160):
+    def _dropdown(self, label, options, width):
         return ft.Dropdown(
             label=label, value=options[0], width=width, dense=True,
             options=[ft.DropdownOption(key=o, text=o) for o in options],
-            on_select=lambda _e: self.refresh(),
+            on_select=lambda _e: self._refresh_tiles(),
         )
 
-    # ---------------------------------------------------------- Anzeige
+    def _apply_sidebar_width(self):
+        """Breite der Seitenleiste als Anteil der Fensterbreite
+        (sidebar_width_fraction, wie in Version 1), mindestens 280 Pixel."""
+        try:
+            fraction = max(0.05, min(0.6, config.get_float("sidebar_width_fraction", 0.15)))
+            width = self.page.width or self.page.window.width or 1400
+            self.sidebar_box.width = max(280, min(600, int(width * fraction)))
+        except (TypeError, ValueError, OverflowError):
+            self.sidebar_box.width = 300
+        self.page.update()
+
+    # -------------------------------------------------------------- Menüs
+
+    def _item(self, label, func, shortcut="", icon=None, tooltip=None):
+        return ft.MenuItemButton(
+            content=ft.Text(label), leading=ft.Icon(icon, size=18) if icon else ft.Container(width=18),
+            trailing=ft.Text(shortcut, size=12, color=TEXT_MUTED) if shortcut else None,
+            on_click=_handler(func), tooltip=tooltip, width=MENU_WIDTH,
+        )
+
+    def _check_item(self, label, is_checked, toggle, tooltip=None):
+        item = ft.MenuItemButton(content=ft.Text(label), tooltip=tooltip, close_on_click=False, width=MENU_WIDTH)
+
+        def sync():
+            item.leading = ft.Icon(ft.Icons.CHECK_BOX if is_checked() else ft.Icons.CHECK_BOX_OUTLINE_BLANK,
+                                   size=18)
+
+        def click(_e):
+            toggle(not is_checked())
+            sync()
+            self.page.update()
+
+        item.on_click = click
+        sync()
+        self._check_syncs.append(sync)
+        return item
+
+    def _build_menu_bar(self):
+        self._check_syncs = []
+        file_menu = ft.SubmenuButton(content=ft.Text("Datei"), controls=[
+            self._item("Neuer Eintrag", self.add_entry, "Strg+N", ft.Icons.ADD),
+            self._item("Bearbeiten", self.edit_entry, "Doppelklick", ft.Icons.EDIT),
+            self._item("Löschen", self.delete_entry, icon=ft.Icons.DELETE_OUTLINE),
+            ft.Divider(height=1),
+            self._item("Bei buchhandel.de suchen", self.search_on_buchhandel, "Strg+B", ft.Icons.TRAVEL_EXPLORE,
+                       "Den markierten Titel direkt auf buchhandel.de suchen (öffnet den Browser)"),
+            self._item("VÖ-Termine von buchhandel.de holen …", self.start_vlb_lookup, icon=ft.Icons.EVENT,
+                       tooltip="Neue Werte erscheinen rot in VÖ +1 bis VÖ +3 und werden erst mit Speichern "
+                               "übernommen."),
+            self._item("Cover neu suchen …", self.open_cover_refresh, icon=ft.Icons.IMAGE_SEARCH,
+                       tooltip="Cover von Band 1 erneut bei DNB und VLB suchen"),
+            ft.Divider(height=1),
+            self._item("CSV importieren …", self.import_csv, icon=ft.Icons.FILE_UPLOAD),
+            self._item("CSV exportieren …", self.export_csv, icon=ft.Icons.FILE_DOWNLOAD),
+            self._item("Bestellung aus E-Mail (.eml) einlesen …", self.import_order_mails, icon=ft.Icons.MAIL,
+                       tooltip="Liest Bestellbestätigungen (.eml) und markiert die bestellten Titel. "
+                               "Die E-Mail selbst wird nicht gespeichert."),
+            self._item("Bestellungen aus Postfach abrufen …", self.fetch_orders_from_mailbox,
+                       icon=ft.Icons.MARK_EMAIL_UNREAD,
+                       tooltip="Ruft Bestellbestätigungen per IMAP direkt aus dem Postfach ab (Zugang unter "
+                               "Konfigurieren → Postfach). Es wird nichts im Postfach verändert."),
+            ft.Divider(height=1),
+            self._item("Von Google Drive laden", self.drive_download, icon=ft.Icons.CLOUD_DOWNLOAD),
+        ])
+        colors_menu = ft.SubmenuButton(content=ft.Text("Farben"), leading=ft.Icon(ft.Icons.PALETTE, size=18),
+                                       width=MENU_WIDTH, controls=[
+            self._check_item(label, lambda k=key: self.colors_enabled.get(k, True),
+                             lambda checked, k=key: self._set_color(k, checked))
+            for key, label in COLOR_OPTIONS
+        ])
+        config_menu = ft.SubmenuButton(content=ft.Text("Konfigurieren"), controls=[
+            colors_menu,
+            self._item("Konfiguration …", self.open_config, icon=ft.Icons.SETTINGS,
+                       tooltip="Zentrale Konfigurationsdatei (config.json) bearbeiten"),
+            self._item("Postfach (IMAP) …", self.open_mail_settings, icon=ft.Icons.ALTERNATE_EMAIL,
+                       tooltip="Zugang und Suchfilter für den Abruf von Bestellbestätigungen"),
+            ft.Divider(height=1),
+            self._check_item(
+                "Nach Bearbeitung zur Kachel springen", lambda: config.get_bool("follow_selection_after_edit"),
+                lambda checked: config.set_value("follow_selection_after_edit", checked),
+                "Wenn aktiv: springt die Ansicht nach dem Bearbeiten automatisch zur bearbeiteten Kachel.",
+            ),
+            self._check_item(
+                "Gestoppt: keine Berechnung", lambda: config.get_bool("exclude_gestoppt_from_stats"),
+                self._set_exclude_gestoppt,
+                "Wenn aktiv: Titel mit VÖ +1 = „Gestoppt“ fließen nicht in die Statistik und die "
+                "Gesamt/Gelesen/Offen-Bilanz je Typ ein.",
+            ),
+        ])
+        help_menu = ft.SubmenuButton(content=ft.Text("Hilfe"), controls=[
+            self._item("LOG-Ordner öffnen", self.open_log_folder, icon=ft.Icons.FOLDER_OPEN,
+                       tooltip="Änderungsprotokoll, Protokolle von ISBN-Abgleich und Bestellungen, fehler.log"),
+            ft.Divider(height=1),
+            self._item(f"Über {APP_TITLE} …", self.open_about, icon=ft.Icons.INFO_OUTLINE),
+        ])
+        return ft.MenuBar(controls=[file_menu, config_menu, help_menu],
+                          style=ft.MenuStyle(bgcolor="#FFFFFF", elevation=0))
+
+    def _set_color(self, key, checked):
+        enabled = dict(config.load().get("colors_enabled") or {})
+        enabled[key] = checked
+        config.set_value("colors_enabled", enabled)
+        self.colors_enabled = config.get_dict("colors_enabled")
+        self._refresh_tiles()
+
+    def _set_exclude_gestoppt(self, checked):
+        config.set_value("exclude_gestoppt_from_stats", checked)
+        self.refresh()
+
+    def open_config(self):
+        from ui.dialogs import open_config_dialog
+
+        def saved():
+            self.colors_enabled = config.get_dict("colors_enabled")
+            for sync in self._check_syncs:
+                sync()
+            self._apply_sidebar_width()
+            self.refresh()
+
+        open_config_dialog(self.page, saved)
+
+    def open_about(self):
+        from ui.dialogs import open_about_dialog
+
+        open_about_dialog(self.page, db.DB_FILE.parent)
+
+    def open_log_folder(self):
+        try:
+            changelog.LOG_DIR.mkdir(parents=True, exist_ok=True)
+            open_path(changelog.LOG_DIR)
+        except OSError as exc:
+            alert(self.page, "LOG-Ordner", f"Der Ordner konnte nicht geöffnet werden:\n{exc}")
+
+    # ---------------------------------------------------------- Legende
+
+    @staticmethod
+    def _swatch(color, label, border=None):
+        box = ft.Container(width=14, height=14, bgcolor=color, border=ft.Border.all(1, "#888888"))
+        if border:
+            box = ft.Container(width=20, height=14, border_radius=3, bgcolor="#FFFFFF",
+                               border=ft.Border.all(3, border))
+        return ft.Row([box, ft.Text(label, size=12)], spacing=4, tight=True)
+
+    def _build_legend(self):
+        """Farblegende wie in Version 1 (VÖ +1, Komplett/Beendet, Verlag,
+        bestellt, angekommen, VÖ neu) und die Rahmenfarben der Kacheln."""
+        self.border_legend = ft.Row(spacing=8, tight=True)
+        return ft.Row(
+            [
+                ft.Text("VÖ +1:", size=12),
+                *[self._swatch(colors.VOE1_STATUS_COLORS[k], label) for k, label in
+                  (("beendet", "Beendet"), ("tba", "TBA"), ("gestoppt", "Gestoppt"), ("na", "NA"))],
+                ft.Text("Komplett/Beendet:", size=12),
+                self._swatch(colors.JA_NEIN_COLORS["ja"], "Ja"),
+                self._swatch(colors.JA_NEIN_COLORS["nein"], "Nein"),
+                ft.Text("Verlag: automatische Farbe je Verlag", size=12),
+                self._swatch(colors.BESTELLT_COLOR, "bestellt"),
+                self._swatch(colors.ANGEKOMMEN_COLOR, "abholbereit"),
+                ft.Text("VÖ neu", size=12, color=colors.NEW_VALUE_TEXT_COLOR,
+                        tooltip="Rote Schrift: von buchhandel.de eingetragen, noch nicht gespeichert"),
+                ft.Text("Rahmen:", size=12),
+                self.border_legend,
+            ],
+            spacing=8, wrap=True,
+        )
+
+    def _refresh_border_legend(self):
+        counts = gallery.status_counts(self.buffer.data)
+        self.border_legend.controls = [
+            self._swatch(None, f"{label} ({counts[label]})", gallery.STATUS_BORDER_COLORS[key])
+            for key, label in gallery.STATUS_LABELS.items()
+        ]
+
+    # ============================================================ Anzeige
 
     def refresh(self):
-        """Filter-Auswahl, Kacheln, Legende und Knöpfe neu aufbauen."""
-        typen = [gallery.FILTER_ALL, *self.buffer.distinct_values("typ")]
-        if self.typ_filter.value not in typen:
-            self.typ_filter.value = gallery.FILTER_ALL
-        self.typ_filter.options = [ft.DropdownOption(key=t, text=t) for t in typen]
+        """Alles neu: Filterauswahl, Verlagsfarben, Seitenleiste, Kacheln."""
+        verlage = self.buffer.distinct_values("verlag")
+        colors.set_verlag_universe(verlage)
+        self._set_options(self.verlag_filter, [gallery.FILTER_ALL, *verlage])
+        self._set_options(self.typ_filter, [gallery.FILTER_ALL, *self.buffer.distinct_values("typ")])
+        self.sidebar.update(self.buffer.data, config.get_bool("exclude_gestoppt_from_stats"))
+        self._refresh_tiles()
 
-        shown = gallery.visible_entries(
+    @staticmethod
+    def _set_options(dropdown, values):
+        if dropdown.value not in values:
+            dropdown.value = values[0]
+        dropdown.options = [ft.DropdownOption(key=v, text=v) for v in values]
+
+    def _shown_entries(self):
+        return gallery.visible_entries(
             self.buffer.data,
-            search=self.search.value or "",
+            search=self.search_field.value or "",
+            verlag=self.verlag_filter.value or gallery.FILTER_ALL,
+            voe1=self.voe1_filter.value or gallery.FILTER_ALL,
+            order=self.order_filter.value or logic.ORDER_FILTER_ALL,
             typ=self.typ_filter.value or gallery.FILTER_ALL,
-            status=self.status_filter.value or gallery.FILTER_ALL,
-            order=self.sort_choice.value or gallery.SORT_TITEL,
+            sort_column=self.sort_choice.value or "titel",
+            reverse=self.sort_reverse,
         )
+
+    def _refresh_tiles(self):
+        """Nur die Kacheln neu filtern/sortieren - die Seitenleiste hängt davon nicht ab."""
+        shown = self._shown_entries()
+        if self.selected_id is not None and all(e.get("id") != self.selected_id for e in shown):
+            self.selected_id = None
         with self._ui_lock:
             self.grid.controls = [self._tile(e) for e in shown]
-            self.count_text.value = f"{len(shown)} von {len(self.buffer.data)} Titeln"
-            self._refresh_legend()
+            self.status_text.value = f"{len(shown)} Einträge" + (
+                "  —  ungespeicherte Änderungen" if self.buffer.dirty else "")
+            self._refresh_border_legend()
             self._refresh_chrome()
             self.page.update()
 
     def _tile(self, entry):
-        return build_tile(entry, self._image_for(entry.get("titel") or ""), self.actions)
-
-    def _image_for(self, titel: str):
-        """Bilddaten des Covers oder None. Die Daten statt eines Dateipfads,
-        damit es auch in der Browser-Vorschau angezeigt wird."""
-        info = self.covers.get(titel)
-        if info is None or info.quelle not in (covers.QUELLE_DNB, covers.QUELLE_EIGEN) or info.path is None:
-            return None
-        if titel not in self._images:
-            try:
-                self._images[titel] = info.path.read_bytes()
-            except OSError:
-                return None
-        return self._images[titel]
-
-    def _refresh_legend(self):
-        counts = gallery.status_counts(self.buffer.data)
-        items = []
-        for key, label in gallery.STATUS_LABELS.items():
-            items.append(ft.Row(
-                [
-                    ft.Container(width=22, height=14, border_radius=4,
-                                 border=ft.Border.all(3, gallery.STATUS_BORDER_COLORS[key]), bgcolor="#FFFFFF"),
-                    ft.Text(f"{label} ({counts[label]})", size=12, color="#3A3F48"),
-                ],
-                spacing=6,
-                tight=True,
-            ))
-        self.legend.controls = items
+        return build_tile(entry, self._image_for(entry.get("titel") or ""), self.tile_actions,
+                          self.colors_enabled, selected=entry.get("id") == self.selected_id)
 
     def _refresh_chrome(self):
         dirty = self.buffer.dirty
         self.page.title = APP_TITLE + (" *" if dirty else "")
-        self.page.appbar.title.value = APP_TITLE + ("  •  ungespeicherte Änderungen" if dirty else "")
         self.undo_btn.disabled = not self.buffer.can_undo
         self.redo_btn.disabled = not self.buffer.can_redo
-        self.save_btn.disabled = not dirty
+        self.status_text.color = colors.NEW_VALUE_TEXT_COLOR if dirty else TEXT_MUTED
 
     def _replace_tile(self, row_id):
-        """Nur die Kachel eines Eintrags neu zeichnen (nach "+1") - die
-        Position bleibt, damit die Kachel nicht unter dem Mauszeiger
-        wegspringt. Filter und Sortierung greifen beim nächsten refresh()."""
+        """Nur die Kachel eines Eintrags neu zeichnen (Auswahl, "+1") - die
+        Position bleibt, damit die Kachel nicht unter dem Mauszeiger wegspringt."""
+        entry = self.buffer.find(row_id)
         with self._ui_lock:
-            entry = self.buffer.find(row_id)
             for i, control in enumerate(self.grid.controls):
                 if control.data == row_id and entry is not None:
                     self.grid.controls[i] = self._tile(entry)
                     break
-            self._refresh_legend()
-            self._refresh_chrome()
             self.page.update()
 
     def _replace_tiles_of(self, titel: str):
@@ -203,173 +454,216 @@ class MangaApp:
                     self.grid.controls[i] = self._tile(entry)
             self.page.update()
 
+    def _after_change(self):
+        """Nach jeder Änderung am Zwischenspeicher: alles neu anzeigen und -
+        wenn eingestellt - zur ausgewählten Kachel springen."""
+        self.refresh()
+        if self.selected_id is not None and config.get_bool("follow_selection_after_edit"):
+            self.page.run_task(self._scroll_to_selected)
+
+    async def _scroll_to_selected(self):
+        try:
+            await self.grid.scroll_to(scroll_key=f"t{self.selected_id}", duration=300)
+        except Exception:  # noqa: BLE001 - Kachel gerade nicht sichtbar (Filter): dann eben nicht springen
+            pass
+
+    def _on_search_change(self, _e):
+        if self._search_timer is not None:
+            self._search_timer.cancel()
+        self._search_timer = threading.Timer(SEARCH_DELAY_SECONDS, self._refresh_tiles)
+        self._search_timer.start()
+
+    def _toggle_sort_direction(self):
+        self.sort_reverse = not self.sort_reverse
+        self.sort_dir_btn.icon = ft.Icons.ARROW_DOWNWARD if self.sort_reverse else ft.Icons.ARROW_UPWARD
+        self.sort_dir_btn.tooltip = ("Absteigend" if self.sort_reverse else "Aufsteigend") + " - klicken zum Umkehren"
+        self._refresh_tiles()
+
+    def _reset_filters(self):
+        self.verlag_filter.value = gallery.FILTER_ALL
+        self.voe1_filter.value = gallery.FILTER_ALL
+        self.order_filter.value = logic.ORDER_FILTER_ALL
+        self.typ_filter.value = gallery.FILTER_ALL
+        self.search_field.value = ""
+        self._refresh_tiles()
+
     def _toast(self, text):
         self.page.show_dialog(ft.SnackBar(ft.Text(text), duration=2500))
 
-    def _alert(self, title, text):
-        dialog = ft.AlertDialog(
-            title=ft.Text(title), content=ft.Text(text),
-            actions=[ft.TextButton("OK", on_click=lambda _e: self.page.pop_dialog())],
-        )
-        self.page.show_dialog(dialog)
+    def _log(self, message: str):
+        """Dauerhaft ins Änderungsprotokoll (changelog.py) und live in die Seitenleiste."""
+        line = changelog.log_change(message)
+        self.sidebar.log(line)
+        self.page.update()
 
-    # --------------------------------------------------------- Aktionen
+    # ============================================================ Auswahl
 
-    def _title_of(self, row_id):
-        entry = self.buffer.find(row_id)
-        return (entry or {}).get("titel") or "(ohne Titel)"
+    def select(self, row_id):
+        previous, self.selected_id = self.selected_id, row_id
+        if previous is not None and previous != row_id:
+            self._replace_tile(previous)
+        self._replace_tile(row_id)
+
+    def _entry_or_hint(self, row_id=None):
+        """Eintrag zu `row_id` bzw. der ausgewählten Kachel - sonst ein Hinweis."""
+        entry = self.buffer.find(row_id if row_id is not None else self.selected_id)
+        if entry is None:
+            alert(self.page, "Hinweis", "Bitte zuerst einen Eintrag auswählen (Kachel anklicken).")
+        return entry
+
+    def _context_items(self, row_id):
+        """Rechtsklickmenü einer Kachel - Aktionen für genau diesen Eintrag."""
+        def item(label, icon, func):
+            if inspect.iscoroutinefunction(func):
+                async def click(_e):
+                    self.select(row_id)
+                    await func(row_id)
+            else:
+                def click(_e):
+                    self.select(row_id)
+                    func(row_id)
+            return ft.PopupMenuItem(content=label, icon=icon, on_click=click)
+
+        entry = self.buffer.find(row_id) or {}
+        items = [
+            item("Bei buchhandel.de suchen", ft.Icons.TRAVEL_EXPLORE, self.search_on_buchhandel),
+            item("Neue VÖ-Termine abfragen", ft.Icons.EVENT, self.lookup_vlb_single),
+        ]
+        if entry.get("bestellt") or entry.get("angekommen"):
+            items.append(item("Bestellt-/Angekommen-Markierung entfernen", ft.Icons.REMOVE_DONE, self.clear_marks))
+        items += [
+            ft.PopupMenuItem(),
+            item("Cover erneut suchen", ft.Icons.IMAGE_SEARCH, self.cover_search),
+            item("Eigenes Bild als Cover …", ft.Icons.FOLDER_OPEN, self.cover_pick),
+        ]
+        if self._image_for(entry.get("titel") or ""):
+            items.append(item("Cover entfernen", ft.Icons.HIDE_IMAGE, self.cover_remove))
+        items += [
+            ft.PopupMenuItem(),
+            item("Bearbeiten", ft.Icons.EDIT, self.edit_entry),
+            item("Löschen", ft.Icons.DELETE_OUTLINE, self.delete_entry),
+        ]
+        return items
+
+    # ========================================================= Bearbeiten
+
+    def add_entry(self):
+        from ui.dialogs import open_entry_dialog
+
+        def save(values):
+            entry = self.buffer.add(values)
+            self.selected_id = entry["id"]
+            self._after_change()
+            self._log(f"Neuer Eintrag: „{entry.get('titel') or '(ohne Titel)'}“.")
+
+        open_entry_dialog(self.page, "Neuer Eintrag", save, verlag_values=self.buffer.distinct_values("verlag"),
+                          other_titles=self.buffer.titles_except())
+
+    def edit_entry(self, row_id=None):
+        from ui.dialogs import open_entry_dialog
+
+        entry = self._entry_or_hint(row_id)
+        if entry is None:
+            return
+        row_id = entry["id"]
+        self.select(row_id)
+
+        def save(values):
+            updated = self.buffer.update(row_id, values)   # erreichte Bestell-Markierungen entfallen dabei
+            if updated is None:
+                return
+            self.selected_id = row_id
+            self._after_change()
+            self._log(f"Bearbeitet: „{updated.get('titel') or '(ohne Titel)'}“.")
+
+        open_entry_dialog(self.page, "Eintrag bearbeiten", save, initial=entry,
+                          verlag_values=self.buffer.distinct_values("verlag"),
+                          other_titles=self.buffer.titles_except(row_id))
+
+    def delete_entry(self, row_id=None):
+        entry = self._entry_or_hint(row_id)
+        if entry is None:
+            return
+
+        def delete():
+            self.buffer.delete(entry["id"])
+            self.selected_id = None
+            self._after_change()
+            self._log(f"Gelöscht: „{entry['titel']}“.")
+
+        confirm(self.page, "Löschen bestätigen", f"„{entry['titel']}“ wirklich löschen?", delete)
 
     def increment_baende(self, row_id):
         # Markierungen entfallen erst, wenn ihr Band erreicht ist; VÖ-Termine
         # rücken nach (siehe logic.increment_baende)
         new_value = self.buffer.increment_baende(row_id)
         if new_value is None:
-            self._alert("Hinweis", "„Bände (bis)“ enthält keine gültige Zahl.")
+            alert(self.page, "Hinweis", "„Bände (bis)“ enthält keine gültige Zahl.")
             return
-        changelog.log_change(f"„{self._title_of(row_id)}“: Bände (bis) auf {new_value} erhöht.")
-        self._replace_tile(row_id)
-        self._toast(f"„{self._title_of(row_id)}“: Besitz {new_value}")
+        self._after_plus(row_id)
+        self._log(f"„{self.buffer.find(row_id).get('titel')}“: Bände (bis) auf {new_value} erhöht.")
 
     def increment_gelesen(self, row_id):
         result = self.buffer.increment_gelesen(row_id)
         if result is None:
-            self._alert("Hinweis", "„Gelesen bis“ enthält keine gültige Zahl.")
+            alert(self.page, "Hinweis", "„Gelesen bis“ enthält keine gültige Zahl.")
             return
         if result == logic.EXCEEDS:
-            self._alert(
-                "Hinweis",
-                "„Gelesen bis“ kann nicht über „Bände (bis)“ hinaus erhöht werden – "
-                "du kannst nicht mehr Bände gelesen haben, als du besitzt.",
-            )
+            alert(self.page, "Hinweis", "„Gelesen bis“ kann nicht über „Bände (bis)“ hinaus erhöht werden – "
+                                        "du kannst nicht mehr Bände gelesen haben, als du besitzt.")
             return
-        changelog.log_change(f"„{self._title_of(row_id)}“: Gelesen bis auf {result} erhöht.")
-        self._replace_tile(row_id)
-        self._toast(f"„{self._title_of(row_id)}“: gelesen bis {result}")
+        self._after_plus(row_id)
+        self._log(f"„{self.buffer.find(row_id).get('titel')}“: Gelesen bis auf {result} erhöht.")
 
-    # ------------------------------------------------------------ Cover
-
-    def _set_cover(self, info: covers.CoverInfo):
-        self.covers[info.titel] = info
-        self._images.pop(info.titel, None)
-        self._replace_tiles_of(info.titel)
-
-    def _cover_worker(self):
-        """Läuft in einem eigenen Thread: sucht nacheinander die Cover aller
-        Titel, für die noch keins gesucht wurde (siehe covers.needs_lookup)."""
-        todo = covers.pending(list(self.buffer.data), self.covers)
-        for done, entry in enumerate(todo):
-            if self._closing:
-                return
-            titel = entry.get("titel") or ""
-            self._show_cover_status(f"Cover werden gesucht: {done + 1} von {len(todo)} …")
-            self._search_one(titel, entry.get("verlag"), entry.get("typ"))
-            time.sleep(isbn_lookup.REQUEST_DELAY_SECONDS)
-        if todo:
-            found = sum(1 for e in todo if self._image_for(e.get("titel") or ""))
-            self._show_cover_status(f"Cover-Suche fertig: {found} von {len(todo)} gefunden", hide_after=8)
-
-    def _search_one(self, titel, verlag, typ):
-        try:
-            info = covers.lookup_and_store(titel, verlag, typ)
-        except Exception as exc:  # noqa: BLE001 - ein Fehler bei einem Titel darf die Suche nicht beenden
-            changelog.log_error(f"Cover-Suche für „{titel}“ fehlgeschlagen: {exc}")
-            return None
-        if not self._closing:
-            self._set_cover(info)
-        return info
-
-    def _show_cover_status(self, text, hide_after=None):
-        with self._ui_lock:
-            self.cover_status.value = text
-            self.cover_status.visible = True
-            self.page.update()
-        if hide_after:
-            time.sleep(hide_after)
-            with self._ui_lock:
-                self.cover_status.visible = False
-                self.page.update()
-
-    def cover_search(self, row_id):
-        entry = self.buffer.find(row_id)
-        if entry is None:
-            return
-        titel = entry.get("titel") or ""
-        self._toast(f"Suche Cover für „{titel}“ …")
-
-        def run():
-            info = self._search_one(titel, entry.get("verlag"), entry.get("typ"))
-            if info is not None and info.quelle == covers.QUELLE_DNB:
-                self._toast(f"Cover für „{titel}“ gefunden (ISBN {info.isbn}).")
-            else:
-                self._toast(f"Kein Cover für „{titel}“ gefunden – du kannst ein eigenes Bild wählen.")
-
-        self.page.run_thread(run)
-
-    async def cover_pick(self, row_id):
-        entry = self.buffer.find(row_id)
-        if entry is None:
-            return
-        files = await ft.FilePicker().pick_files(
-            dialog_title=f"Cover für „{entry.get('titel')}“ wählen",
-            file_type=ft.FilePickerFileType.CUSTOM,
-            allowed_extensions=list(covers.IMAGE_EXTENSIONS),
-        )
-        if not files:
-            return
-        if not files[0].path:
-            self._alert("Hinweis", "Ein eigenes Bild lässt sich nur in der Desktop-App wählen.")
-            return
-        try:
-            info = covers.set_custom(entry.get("titel") or "", Path(files[0].path))
-        except (OSError, ValueError) as exc:
-            self._alert("Bild nicht übernommen", str(exc))
-            return
-        self._set_cover(info)
-        self._toast("Eigenes Cover übernommen.")
-
-    def cover_remove(self, row_id):
-        entry = self.buffer.find(row_id)
-        if entry is None:
-            return
-        self._set_cover(covers.remove(entry.get("titel") or ""))
-        self._toast("Cover entfernt – „Cover erneut suchen“ holt es zurück.")
-
-    # --------------------------------------------------------- Bearbeiten
+    def _after_plus(self, row_id):
+        """Nach "+1": Seitenleiste und Statuszeile neu, die Kachel wird
+        ausgewählt und nur sie neu gezeichnet - Filter und Sortierung greifen
+        erst beim nächsten Neuaufbau, damit sie nicht unter dem Mauszeiger
+        wegspringt."""
+        self.sidebar.update(self.buffer.data, config.get_bool("exclude_gestoppt_from_stats"))
+        self.status_text.value = f"{len(self.grid.controls)} Einträge" + (
+            "  —  ungespeicherte Änderungen" if self.buffer.dirty else "")
+        self._refresh_border_legend()
+        self._refresh_chrome()
+        self.select(row_id)
 
     def undo(self):
         if self.buffer.undo():
-            self.refresh()
-            self._toast("Rückgängig gemacht.")
+            self.selected_id = None
+            self._after_change()
+            self._log("Rückgängig gemacht.")
 
     def redo(self):
         if self.buffer.redo():
-            self.refresh()
-            self._toast("Wiederholt.")
+            self.selected_id = None
+            self._after_change()
+            self._log("Wiederholt.")
 
     def save(self) -> bool:
         """Schreibt den kompletten Puffer in die Datenbank (vorher Sicherung
-        nach BACKUP/). Bei einem Fehler bleibt der Puffer erhalten."""
+        nach BACKUP/). Bei einem Fehler bleibt der Puffer unverändert."""
         try:
             db.create_backup("vor-speichern")
         except Exception as exc:  # noqa: BLE001 - dem Nutzer die Ursache zeigen
-            changelog.log_change(f"Sicherung vor dem Speichern fehlgeschlagen: {exc}")
+            self._log(f"Sicherung vor dem Speichern fehlgeschlagen: {exc}")
         try:
             saved = db.replace_all(self.buffer.data)
         except Exception as exc:  # noqa: BLE001 - ein Speicherfehler darf die Änderungen nicht verschlucken
-            changelog.log_change(f"Speichern fehlgeschlagen: {exc}")
-            self._alert(
-                "Speichern fehlgeschlagen",
-                f"Die Datenbank konnte nicht gespeichert werden:\n\n{exc}\n\n"
-                "Die Änderungen sind weiterhin im Zwischenspeicher. Bitte später erneut speichern.",
-            )
+            self._log(f"Speichern fehlgeschlagen: {exc}")
+            alert(self.page, "Speichern fehlgeschlagen",
+                  f"Die Datenbank konnte nicht gespeichert werden:\n\n{exc}\n\n"
+                  "Die Änderungen sind weiterhin im Zwischenspeicher. Mögliche Ursache: Die Datei ist gerade von "
+                  "einem anderen Programm gesperrt (z. B. Cloud-Synchronisierung oder Virenscanner). "
+                  "Bitte später erneut speichern.")
             return False
         self.buffer.mark_saved(saved)
-        changelog.log_change(f"Gespeichert ({len(saved)} Einträge).")
+        self.selected_id = None
         self.refresh()
         self._toast(f"Gespeichert – {len(saved)} Einträge")
+        self._log(f"Gespeichert ({len(saved)} Einträge).")
         return True
 
-    # ----------------------------------------------------- Tastatur/Ende
+    # ===================================================== Tastatur/Ende
 
     def _on_key(self, e: ft.KeyboardEvent):
         if not e.ctrl:
@@ -378,17 +672,22 @@ class MangaApp:
         if key == "S":
             self.save()
         elif key == "Z":
-            self.undo()
+            self.redo() if e.shift else self.undo()
         elif key == "Y":
             self.redo()
+        elif key == "N":
+            self.add_entry()
+        elif key == "B":
+            self.search_on_buchhandel()
 
     async def _close(self):
         """Fenster endgültig schließen - alles ist gespeichert oder bewusst
         verworfen. Flet wartet danach gelegentlich endlos auf das schon
-        geschlossene Fenster, und das Programm bliebe unsichtbar im
-        Task-Manager zurück; on_closed (main.py) beendet es dann nach kurzer
-        Frist selbst."""
+        geschlossene Fenster; on_closed (main.py) beendet das Programm dann
+        nach kurzer Frist selbst."""
         self._closing = True
+        if self._cover_cancel is not None:
+            self._cover_cancel.set()
         if self.on_closed:
             self.on_closed()
         await self.page.window.destroy()
@@ -401,7 +700,7 @@ class MangaApp:
             return
 
         async def answer(choice):
-            self.page.pop_dialog()
+            close_dialog(self.page)
             if choice == "save" and not self.save():
                 return   # Speichern fehlgeschlagen: Fenster offen lassen
             if choice in ("save", "discard"):

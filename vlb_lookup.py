@@ -454,8 +454,9 @@ def plan_entry(entry: dict, products: list[dict]) -> SeriesResult:
 # Abruf
 # ---------------------------------------------------------------------------
 
-def fetch_products(query: str, session: Optional[requests.Session] = None) -> list[dict]:
-    """Eine Anfrage an buchhandel.de; gibt die Produktliste (neueste zuerst) zurück."""
+def fetch_products(query: str, session: Optional[requests.Session] = None, newest_first: bool = True) -> list[dict]:
+    """Eine Anfrage an buchhandel.de; gibt die Produktliste zurück - neueste
+    zuerst, mit `newest_first=False` älteste zuerst (z.B. für Band 1)."""
     http = session or requests
     try:
         response = http.get(
@@ -464,7 +465,7 @@ def fetch_products(query: str, session: Optional[requests.Session] = None) -> li
                 "filter[products][query]": query,
                 "page[number]": 1,
                 "page[size]": PAGE_SIZE,
-                "sort[publicationDate]": "desc",
+                "sort[publicationDate]": "desc" if newest_first else "asc",
             },
             headers={
                 "User-Agent": f"MangaLibrary/{appinfo.VERSION} (private Bibliotheksverwaltung)",
