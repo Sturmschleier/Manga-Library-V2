@@ -12,12 +12,13 @@ Ablauf je Titel:
      Treffern vor dem ältesten Jahr der vorigen.
   2. Das Cover zu dieser ISBN vom Cover-Dienst der DNB laden und als Datei
      in COVER_DIR ablegen.
-  0. Verlag JNC Nina: zuerst direkt beim Verlag (find_jnc_cover) - dessen
-     Schnittstelle kennt jede Reihe mit dem Cover jedes Bandes.
   3. Ausweichlösung VLB (buchhandel.de): Hat die DNB kein Bild, das Cover
      derselben ISBN aus dem VLB; findet die DNB keine ISBN, Band 1 im VLB
      suchen (find_band1_vlb - dort lässt sich aufsteigend sortieren, Band 1
      steht also vorn).
+  4. Letzte Ausweichlösung manga-passion.de (find_manga_passion_cover): die
+     passende Ausgabe (Titel, Manga oder Roman/Light Novel, möglichst
+     gedruckt und vom eingetragenen Verlag) und das Cover ihres Bandes 1.
 
 Was gefunden wurde, steht in der Tabelle `covers` der Datenbank - wie
 isbn_cache mit dem Titel als Schlüssel, weil die IDs beim Speichern neu
@@ -53,18 +54,21 @@ IMAGE_EXTENSIONS = ("jpg", "jpeg", "png", "webp", "gif")
 
 QUELLE_DNB = "dnb"            # automatisch gefunden (DNB)
 QUELLE_VLB = "vlb"            # automatisch gefunden (VLB/buchhandel.de, Ausweichlösung)
-QUELLE_JNC = "jnc"            # automatisch gefunden (direkt bei JNC Nina)
-FOUND_SOURCES = (QUELLE_DNB, QUELLE_VLB, QUELLE_JNC)
+QUELLE_MP = "manga-passion"  # automatisch gefunden (manga-passion.de, letzte Ausweichlösung)
+QUELLE_JNC = "jnc"            # frühere Quelle (direkt bei JNC Nina) - schon geladene Cover bleiben gültig
+FOUND_SOURCES = (QUELLE_DNB, QUELLE_VLB, QUELLE_MP, QUELLE_JNC)
 
-# JNC Nina: Reihenliste und Bände je Reihe (Schnittstelle der Verlagsseite
-# jnc-nina.eu); Cover in 960 Pixel als JPEG
-JNC_API = "https://api.jnc-nina.eu/app/v2"
-JNC_COVER_SIZE = ("/pub/img/480/webp/", "/pub/img/960/jpg/")
-JNC_HEADERS = {"User-Agent": "MangaLibrary/2 (private Bibliotheksverwaltung)", "Accept": "application/json"}
+# manga-passion.de: Ausgaben (editions) mit Verlagen und Vorlage, je Band
+# ein Cover. Vorlage (sources[].type): 0 = Manga, 1 = Roman/Light Novel.
+MP_API = "https://api.manga-passion.de"
+MP_HEADERS = {"User-Agent": "MangaLibrary/2 (private Bibliotheksverwaltung)", "Accept": "application/json"}
+MP_SOURCE_MANGA = 0
+MP_SOURCE_NOVEL = 1
 QUELLE_EIGEN = "eigen"        # von Hand gewähltes Bild
 QUELLE_KEINE = "keine"        # gesucht, nichts gefunden - nach RETRY_DAYS erneut
 QUELLE_ENTFERNT = "entfernt"  # von Hand entfernt - nie wieder automatisch
-SOURCE_LABELS = {QUELLE_DNB: "DNB", QUELLE_VLB: "VLB", QUELLE_JNC: "JNC Nina", QUELLE_EIGEN: "eigenes Bild"}
+SOURCE_LABELS = {QUELLE_DNB: "DNB", QUELLE_VLB: "VLB", QUELLE_MP: "manga-passion.de", QUELLE_JNC: "JNC Nina",
+                 QUELLE_EIGEN: "eigenes Bild"}
 
 RETRY_DAYS = 30
 MAX_QUERIES_PER_PASS = 15     # Anfragen je Durchgang (mit/ohne Verlag) beim Rückwärtsblättern
@@ -344,60 +348,59 @@ def find_band1_vlb(titel: str, verlag: Optional[str] = None, typ: Optional[str] 
     return None
 
 
-# ------------------------------------------------------------ JNC Nina
+# ------------------------------------------------------- manga-passion.de
 
-_jnc_series_cache = None
-_JNC_SUFFIX_RE = re.compile(r"\s*\((manga|light novel|fr)\)\s*$", re.IGNORECASE)
-
-
-def is_jnc(verlag: Optional[str]) -> bool:
-    return "jnc" in (verlag or "").casefold()
+# Zusätze im Titel einer Ausgabe, die nicht zum Reihentitel gehören
+_MP_SUFFIX_RE = re.compile(
+    r"(\s*\([^)]*\))+\s*$|\s*[–-]\s*(light novel|taschenbuchausgabe)\s*$|\s+roman\s*$", re.IGNORECASE)
 
 
-def _jnc_series() -> list:
-    """Alle Reihen von JNC Nina (einmal je Programmlauf abgefragt)."""
-    global _jnc_series_cache
-    if _jnc_series_cache is None:
-        series, skip = [], 0
-        while True:
-            resp = requests.get(f"{JNC_API}/series", params={"format": "json", "skip": skip},
-                                headers=JNC_HEADERS, timeout=20)
-            resp.raise_for_status()
-            data = resp.json()
-            series += data.get("series") or []
-            if (data.get("pagination") or {}).get("lastPage", True) or not data.get("series"):
-                break
-            skip += len(data["series"])
-        _jnc_series_cache = series
-    return _jnc_series_cache
+def mp_edition_title(title: str) -> str:
+    """ "Solo Leveling Roman – Taschenbuchausgabe (eBook)" -> "Solo Leveling" """
+    previous = None
+    title = title or ""
+    while previous != title:   # Zusätze können aufeinander folgen
+        previous, title = title, _MP_SUFFIX_RE.sub("", title).strip()
+    return title
 
 
-def jnc_series_match(series_title: str, titel: str, typ: Optional[str]) -> bool:
-    """Passt die JNC-Reihe zum eigenen Titel? Gleich nach Normalisierung,
-    ohne Zusatz "(Manga)"/"(Light Novel)"; ein "(Manga)"-Zusatz muss zum Typ
-    passen - so wird die Light Novel nicht mit der Manga-Ausgabe verwechselt."""
-    is_manga_edition = "(manga)" in series_title.casefold()
-    wants_manga = (typ or "").strip().casefold() in ("manga", "manhwa")
-    if is_manga_edition != wants_manga or "(fr)" in series_title.casefold():
-        return False
-    return _normalize(_JNC_SUFFIX_RE.sub("", series_title)) == _normalize(search_title(titel))
-
-
-def find_jnc_cover(titel: str, typ: Optional[str] = None) -> Optional[str]:
-    """URL des Covers von Band 1 bei JNC Nina, sonst None."""
-    try:
-        series = [s for s in _jnc_series() if jnc_series_match(s.get("title") or "", titel, typ)]
-        if not series:
-            return None
-        resp = requests.get(f"{JNC_API}/series/{series[0]['slug']}/volumes", params={"format": "json"},
-                            headers=JNC_HEADERS, timeout=20)
-        resp.raise_for_status()
-        volumes = resp.json().get("volumes") or []
-    except (requests.RequestException, ValueError, KeyError):
+def _mp_rank(edition: dict, titel: str, verlag: Optional[str], typ: Optional[str]) -> Optional[tuple]:
+    """Rangfolge einer Ausgabe (kleiner = besser), None wenn der Titel nicht
+    passt. Vorrang hat die Vorlage passend zum Typ (Manga oder Roman/Light
+    Novel) - "Solo Leveling Light Novel" bekommt so den Roman, nicht den
+    Manhwa. Gibt es nur Ausgaben mit anderer Vorlage, zählt auch eine davon
+    (manga-passion ordnet manches anders ein, z.B. Sachbücher). Danach
+    gedruckt vor eBook, eingetragener Verlag vor anderen."""
+    if _normalize(mp_edition_title(edition.get("title") or "")) != _normalize(search_title(titel)):
         return None
-    first = next((v for v in volumes if v.get("number") == 1), None)
-    url = ((first or {}).get("cover") or {}).get("coverUrl") or ""
-    return url.replace(*JNC_COVER_SIZE) if url else None
+    wanted = MP_SOURCE_NOVEL if (typ or "").strip().casefold() == "light novel" else MP_SOURCE_MANGA
+    source_types = {s.get("type") for s in edition.get("sources") or []}
+    type_ok = not source_types or wanted in source_types
+    publisher_names = " ".join(p.get("name") or "" for p in edition.get("publishers") or [])
+    verlag_ok = bool(isbn_lookup._normalize_verlag(verlag or "") & isbn_lookup._normalize_verlag(publisher_names))
+    return (0 if type_ok else 1, 0 if edition.get("print") else 1, 0 if verlag_ok else 1)
+
+
+def find_manga_passion_cover(titel: str, verlag: Optional[str] = None, typ: Optional[str] = None) -> Optional[str]:
+    """URL des Covers von Band 1 bei manga-passion.de, sonst None."""
+    try:
+        resp = requests.get(f"{MP_API}/editions", params={"search": search_title(titel)},
+                            headers=MP_HEADERS, timeout=20)
+        resp.raise_for_status()
+        ranked = sorted(
+            (rank, i, e) for i, e in enumerate(resp.json() or [])
+            if (rank := _mp_rank(e, titel, verlag, typ)) is not None
+        )
+        if not ranked:
+            return None
+        edition = ranked[0][2]
+        resp = requests.get(f"{MP_API}/editions/{edition['id']}/volumes", headers=MP_HEADERS, timeout=20)
+        resp.raise_for_status()
+        volumes = resp.json() or []
+    except (requests.RequestException, ValueError, KeyError, TypeError):
+        return None
+    first = next((v for v in volumes if v.get("number") == 1 and v.get("cover")), None)
+    return (first or {}).get("cover") or edition.get("cover") or None
 
 
 def _store_image(info: CoverInfo, isbn: str, image: bytes, quelle: str) -> None:
@@ -411,14 +414,6 @@ def lookup_and_store(titel: str, verlag: Optional[str] = None, typ: Optional[str
     """Sucht ISBN und Cover von Band 1 und merkt sich das Ergebnis - auch
     ein erfolgloses, damit nicht bei jedem Start erneut gesucht wird.
     Reihenfolge siehe Moduldoku; `use_vlb=False` lässt das VLB aus."""
-    if is_jnc(verlag):
-        url = find_jnc_cover(titel, typ)
-        image = _download_image(url) if url else None
-        if image:
-            name = "jnc_" + hashlib.sha1(titel.encode("utf-8")).hexdigest()[:12]
-            COVER_DIR.mkdir(parents=True, exist_ok=True)
-            (COVER_DIR / f"{name}.jpg").write_bytes(image)
-            return save(CoverInfo(titel, datei=f"{name}.jpg", quelle=QUELLE_JNC, geprueft_am=_today()))
     isbn = find_band1_isbn(titel, verlag, typ, log) or ""
     info = CoverInfo(titel, isbn=isbn, quelle=QUELLE_KEINE, geprueft_am=_today())
     image = download_cover(isbn) if isbn else None
@@ -434,6 +429,14 @@ def lookup_and_store(titel: str, verlag: Optional[str] = None, typ: Optional[str
                 image = download_vlb_cover(vlb_isbn)
         if image:
             _store_image(info, isbn, image, QUELLE_VLB)
+            return save(info)
+    url = find_manga_passion_cover(titel, verlag, typ)
+    image = _download_image(url) if url else None
+    if image:
+        name = "mp_" + hashlib.sha1(titel.encode("utf-8")).hexdigest()[:12]
+        COVER_DIR.mkdir(parents=True, exist_ok=True)
+        (COVER_DIR / f"{name}.jpg").write_bytes(image)
+        info.datei, info.quelle = f"{name}.jpg", QUELLE_MP
     return save(info)
 
 
