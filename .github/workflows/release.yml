@@ -1,0 +1,157 @@
+# Release: baut MangaLibraryV2.exe auf einem frischen GitHub-Rechner (Windows) mit
+# den festen Versionen aus requirements-build.txt (build.bat / build_exe.py) -
+# ohne dass auf einem eigenen Rechner Python oder sonst etwas installiert sein muss.
+#
+# Starten:
+#   - Neue Version:  VERSION in appinfo.py per Pull Request anheben und mergen,
+#     dann den Tag setzen:   git tag v2.0.1 && git push origin v2.0.1
+#     Der Workflow baut die exe und legt das Release mit exe und Prüfsumme an.
+#     Den Text liefert docs/release-notes/<Tag>.md, falls vorhanden; dazu
+#     kommen die automatisch erzeugten Änderungen seit dem letzten Release.
+#   - Nur ausprobieren:  Reiter "Actions" -> "Release" -> "Run workflow". Das legt
+#     KEIN Release an; die exe steht als Download am Durchlauf (Artefakt).
+#
+# Jede gebaute exe bekommt einen Herkunftsnachweis von GitHub (Attestation):
+#   gh attestation verify MangaLibraryV2.exe --repo Sturmschleier/Manga-Library-V2
+#
+# Die exe ist nicht signiert - Windows SmartScreen kann beim ersten Start warnen.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:   # von Hand startbar, ohne Release
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false   # ein laufender Release-Build wird nie abgebrochen
+
+jobs:
+  build:
+    name: exe bauen
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Code auschecken
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # für die Prüfung, ob der Tag auf main liegt
+
+      - name: Python einrichten
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Tag prüfen (Version und Branch)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          version="$(python -c 'import appinfo; print(appinfo.VERSION)')"
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::Der Tag ${GITHUB_REF_NAME} passt nicht zu VERSION=${version} in appinfo.py"
+            exit 1
+          fi
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "::error::Der Tag ${GITHUB_REF_NAME} liegt nicht auf main - Releases nur aus main"
+            exit 1
+          fi
+
+      - name: exe bauen (build.bat)
+        shell: cmd
+        run: build.bat --no-pause
+
+      - name: Ergebnis prüfen
+        shell: pwsh
+        run: |
+          $exe = Get-Item dist\MangaLibraryV2.exe
+          if ($exe.Length -lt 40MB) { throw "MangaLibraryV2.exe ist nur $($exe.Length) Bytes groß - der Flet-Client fehlt vermutlich" }
+          "MangaLibraryV2.exe: $($exe.Length) Bytes"
+
+      - name: exe als Artefakt hochladen
+        uses: actions/upload-artifact@v7
+        with:
+          name: exe-build
+          path: dist/MangaLibraryV2.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  finalize:
+    name: Prüfsumme, Herkunftsnachweis, Release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write       # Release anlegen
+      id-token: write       # Herkunftsnachweis (Attestation)
+      attestations: write
+    steps:
+      - name: Code auschecken (Release-Text)
+        uses: actions/checkout@v5
+
+      - name: Fertige exe laden
+        uses: actions/download-artifact@v8
+        with:
+          name: exe-build
+          path: final
+
+      - name: Prüfsumme berechnen
+        working-directory: final
+        run: |
+          sha256sum MangaLibraryV2.exe | sed 's/ \*/  /' > MangaLibraryV2.exe.sha256
+          cat MangaLibraryV2.exe.sha256
+          {
+            echo "### MangaLibraryV2.exe"
+            echo
+            echo "- Größe: $(stat -c%s MangaLibraryV2.exe) Bytes"
+            echo "- SHA-256: \`$(cut -d' ' -f1 MangaLibraryV2.exe.sha256)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Herkunftsnachweis erstellen
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: final/MangaLibraryV2.exe
+
+      - name: exe und Prüfsumme als Artefakt bereitstellen
+        uses: actions/upload-artifact@v7
+        with:
+          name: MangaLibraryV2
+          path: |
+            final/MangaLibraryV2.exe
+            final/MangaLibraryV2.exe.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Release anlegen oder ergänzen
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            # Release existiert schon (z. B. mit von Hand geschriebenem Text): nur die Dateien ersetzen
+            gh release upload "${tag}" final/MangaLibraryV2.exe final/MangaLibraryV2.exe.sha256 --clobber \
+              --repo "${GITHUB_REPOSITORY}"
+            exit 0
+          fi
+          notes="docs/release-notes/${tag}.md"
+          if [ -f "${notes}" ]; then
+            cp "${notes}" notes.md
+          else
+            echo "Gebaut von GitHub Actions aus dem Tag \`${tag}\`." > notes.md
+          fi
+          cat >> notes.md <<EOF
+
+          ## Installation und Aktualisierung
+          - \`MangaLibraryV2.exe\` in einen eigenen Ordner legen und starten. Sie legt \`manga_library.db\`, \`config.json\`, \`covers/\`, \`LOG/\` und \`BACKUP/\` **neben sich** ab.
+          - **Aktualisieren:** Programm beenden und die exe im Ordner durch die neue ersetzen - die Daten bleiben erhalten.
+          - Beim allerersten Start entpackt die exe das Programmfenster einmalig nach \`%USERPROFILE%\\.flet\\client\` - das dauert ein paar Sekunden.
+          - Die exe ist **nicht signiert**: Windows SmartScreen kann beim ersten Start warnen (Weitere Informationen -> Trotzdem ausführen).
+          - **Prüfen:** SHA-256 steht in \`MangaLibraryV2.exe.sha256\`; die Herkunft bestätigt \`gh attestation verify MangaLibraryV2.exe --repo ${GITHUB_REPOSITORY}\`.
+          EOF
+          gh release create "${tag}" final/MangaLibraryV2.exe final/MangaLibraryV2.exe.sha256 \
+            --repo "${GITHUB_REPOSITORY}" --title "Manga Library V2 ${tag}" \
+            --notes-file notes.md --generate-notes --verify-tag --latest
