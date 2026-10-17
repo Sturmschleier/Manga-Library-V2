@@ -12,6 +12,10 @@ Ablauf je Titel:
      Treffern vor dem ältesten Jahr der vorigen.
   2. Das Cover zu dieser ISBN vom Cover-Dienst der DNB laden und als Datei
      in COVER_DIR ablegen.
+  3. Ausweichlösung VLB (buchhandel.de): Hat die DNB kein Bild, das Cover
+     derselben ISBN aus dem VLB; findet die DNB keine ISBN, Band 1 im VLB
+     suchen (find_band1_vlb - dort lässt sich aufsteigend sortieren, Band 1
+     steht also vorn).
 
 Was gefunden wurde, steht in der Tabelle `covers` der Datenbank - wie
 isbn_cache mit dem Titel als Schlüssel, weil die IDs beim Speichern neu
@@ -36,13 +40,17 @@ import requests
 
 import database as db
 import isbn_lookup
+import vlb_lookup
 from paths import base_dir
 
 COVER_DIR = base_dir() / "covers"
 DNB_COVER_URL = "https://portal.dnb.de/opac/mvb/cover"
+# Cover im VLB: -s/-m/-l = klein/mittel/groß; "l" ist etwa so groß wie das der DNB
+VLB_COVER_URL = "https://buchhandel-rest.prod.kubernetes.vlb.de/cover/{isbn}/{isbn}-cover-l.jpg"
 IMAGE_EXTENSIONS = ("jpg", "jpeg", "png", "webp", "gif")
 
-QUELLE_DNB = "dnb"            # automatisch gefunden
+QUELLE_DNB = "dnb"            # automatisch gefunden (DNB)
+QUELLE_VLB = "vlb"            # automatisch gefunden (VLB/buchhandel.de, Ausweichlösung)
 QUELLE_EIGEN = "eigen"        # von Hand gewähltes Bild
 QUELLE_KEINE = "keine"        # gesucht, nichts gefunden - nach RETRY_DAYS erneut
 QUELLE_ENTFERNT = "entfernt"  # von Hand entfernt - nie wieder automatisch
@@ -132,7 +140,7 @@ def needs_lookup(info: Optional[CoverInfo], today: Optional[str] = None) -> bool
     if info is None:
         return True
     if info.quelle != QUELLE_KEINE:
-        return False
+        return False   # gefunden (DNB/VLB), eigenes Bild oder entfernt
     try:
         last = datetime.fromisoformat(info.geprueft_am).date()
     except ValueError:
@@ -272,11 +280,11 @@ def _next_year_bound(records, before: Optional[int]) -> Optional[int]:
     return min(oldest, before - 1) if before is not None else oldest
 
 
-def download_cover(isbn: str) -> Optional[bytes]:
-    """Cover zur ISBN vom Cover-Dienst der DNB, oder None (kein Cover -
-    die DNB antwortet dann mit 404 - oder Netzwerkfehler)."""
+def _download_image(url: str, params: Optional[dict] = None) -> Optional[bytes]:
+    """Bilddaten von `url`, oder None (kein Bild - DNB und VLB antworten
+    dann mit 404 - oder Netzwerkfehler)."""
     try:
-        resp = requests.get(DNB_COVER_URL, params={"isbn": isbn}, timeout=20)
+        resp = requests.get(url, params=params, timeout=20)
     except requests.RequestException:
         return None
     content_type = resp.headers.get("content-type", "")
@@ -285,19 +293,93 @@ def download_cover(isbn: str) -> Optional[bytes]:
     return resp.content
 
 
+def download_cover(isbn: str) -> Optional[bytes]:
+    """Cover zur ISBN vom Cover-Dienst der DNB, oder None."""
+    return _download_image(DNB_COVER_URL, {"isbn": isbn})
+
+
+def download_vlb_cover(isbn: str) -> Optional[bytes]:
+    """Cover zur ISBN aus dem VLB (buchhandel.de), oder None."""
+    return _download_image(VLB_COVER_URL.format(isbn=isbn))
+
+
+def _vlb_query(titel: str) -> str:
+    """Suche im VLB ohne Jahresgrenze (Band 1 ist meist älter)."""
+    titel = " ".join(vlb_lookup._QUERY_UNSAFE_RE.sub(" ", titel).split())
+    return f"(ti={titel}) und pt=pbook"
+
+
+def find_band1_vlb(titel: str, verlag: Optional[str] = None, typ: Optional[str] = None) -> Optional[str]:
+    """ISBN von Band 1 im VLB, sonst None. Die Zuordnung der Treffer zur Reihe
+    (Verlag, Titelstamm, Manga/Light Novel, keine Sonderausgaben) übernimmt
+    vlb_lookup.find_next_volumes - dieselbe Logik wie beim Abgleich der
+    VÖ-Termine. Ohne Treffer wird noch der Titel ohne Untertitel versucht."""
+    entry = {"titel": titel, "verlag": verlag or "", "typ": typ or "", "baende_bis": "0"}
+    is_ln = (typ or "").strip().lower() == "light novel"
+    names = [vlb_lookup._strip_light_novel(titel) or titel if is_ln else search_title(titel)]
+    short = vlb_lookup._TITLE_SPLIT_RE.split(names[0])[0].strip()
+    if short and short != names[0]:
+        names.append(short)
+    for i, name in enumerate(names):
+        if i:
+            time.sleep(vlb_lookup.REQUEST_DELAY_SECONDS)   # Fair Use, siehe vlb_lookup
+        try:
+            products = vlb_lookup.fetch_products(_vlb_query(name), newest_first=False)
+        except vlb_lookup.VlbError:
+            return None
+        volumes, _note = vlb_lookup.find_next_volumes(entry, products)
+        if 1 in volumes and volumes[1].isbn:
+            return volumes[1].isbn
+    return None
+
+
+def _store_image(info: CoverInfo, isbn: str, image: bytes, quelle: str) -> None:
+    COVER_DIR.mkdir(parents=True, exist_ok=True)
+    (COVER_DIR / f"{isbn}.jpg").write_bytes(image)
+    info.isbn, info.datei, info.quelle = isbn, f"{isbn}.jpg", quelle
+
+
 def lookup_and_store(titel: str, verlag: Optional[str] = None, typ: Optional[str] = None,
-                     log: Optional[list] = None) -> CoverInfo:
+                     log: Optional[list] = None, use_vlb: bool = True) -> CoverInfo:
     """Sucht ISBN und Cover von Band 1 und merkt sich das Ergebnis - auch
-    ein erfolgloses, damit nicht bei jedem Start erneut gesucht wird."""
+    ein erfolgloses, damit nicht bei jedem Start erneut gesucht wird.
+    Reihenfolge siehe Moduldoku; `use_vlb=False` lässt das VLB aus."""
     isbn = find_band1_isbn(titel, verlag, typ, log) or ""
     info = CoverInfo(titel, isbn=isbn, quelle=QUELLE_KEINE, geprueft_am=_today())
     image = download_cover(isbn) if isbn else None
     if image:
-        COVER_DIR.mkdir(parents=True, exist_ok=True)
-        (COVER_DIR / f"{isbn}.jpg").write_bytes(image)
-        info.datei = f"{isbn}.jpg"
-        info.quelle = QUELLE_DNB
+        _store_image(info, isbn, image, QUELLE_DNB)
+        return save(info)
+    if use_vlb:
+        image = download_vlb_cover(isbn) if isbn else None
+        if not image and not isbn:
+            vlb_isbn = find_band1_vlb(titel, verlag, typ)
+            if vlb_isbn:
+                isbn = info.isbn = vlb_isbn
+                image = download_vlb_cover(vlb_isbn)
+        if image:
+            _store_image(info, isbn, image, QUELLE_VLB)
     return save(info)
+
+
+def refresh_targets(entries, infos: dict, only_missing: bool = True) -> list:
+    """Einträge für "Cover neu suchen": nur die ohne Bild (auch erfolglos
+    gesuchte und entfernte), oder alle - eigene Bilder bleiben immer
+    unangetastet. Jeder Titel einmal."""
+    seen = set()
+    result = []
+    for entry in entries:
+        titel = (entry.get("titel") or "").strip()
+        if not titel or titel in seen:
+            continue
+        info = infos.get(titel)
+        if info is not None and info.quelle == QUELLE_EIGEN:
+            continue
+        if only_missing and info is not None and info.quelle in (QUELLE_DNB, QUELLE_VLB) and info.path:
+            continue
+        seen.add(titel)
+        result.append(entry)
+    return result
 
 
 def set_custom(titel: str, source: Path) -> CoverInfo:

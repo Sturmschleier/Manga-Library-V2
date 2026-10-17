@@ -11,41 +11,62 @@ Version 1 (Qt/PySide6) liegt weiter im eigenen Repository
 Versionen sind komplett getrennt. Die Datenbank (`manga_library.db`) hat
 dasselbe Format und lässt sich also übernehmen.
 
-> **Stand:** frühe Entwicklungsversion. Die Kachelansicht funktioniert, die
-> übrigen Funktionen aus Version 1 folgen nach und nach (siehe Fahrplan).
+> **Stand:** Entwicklungsversion mit allen Funktionen aus Version 1, als
+> Kachelansicht. Es fehlen noch der Veröffentlichungskalender und das Release
+> (siehe Fahrplan).
 
-## Was geht schon
+## Was geht
 
-- **Kachelansicht** aller Titel: Cover von Band 1, Verlag, Typ, Besitz,
-  Gelesen und nächster Termin
-- **Cover vom ersten Band:** werden nach dem Start im Hintergrund bei der
-  Deutschen Nationalbibliothek gesucht (ISBN von Band 1, dann das Bild vom
-  DNB-Cover-Dienst) und im Ordner `covers/` abgelegt. Jeder Titel wird nur
-  einmal gesucht; ohne Treffer nach 30 Tagen erneut. Über das Menü oben
-  links auf dem Cover: erneut suchen, eigenes Bild wählen oder Cover
-  entfernen. Ohne Cover steht der Titel auf der Verlagsfarbe. Abschalten:
-  `"cover_auto_lookup": false` in `config.json`
-- **Farbige Rahmen** nach Status aus „VÖ +1“:
-  Beendet (grün), TBA (orange), NA (pink), Gestoppt (rot), laufend (grau)
-- **„+1“-Knöpfe** für Besitz und Gelesen, mit denselben Regeln wie in
-  Version 1: Bei +1 Besitz rücken die VÖ-Termine nach (ohne weitere Termine
-  wird es „NA“), erreichte Bestellmarkierungen entfallen. „Gelesen“ kann
-  nicht über „Besitz“ steigen.
-- Suche, Filter nach Typ und Status, Sortierung nach Titel, nächster VÖ,
-  Zugang oder Ungelesenen
-- Rückgängig/Wiederholen (Strg+Z/Strg+Y), Speichern (Strg+S) mit Sicherung
-  der Datenbank nach `BACKUP/`; beim Schließen mit ungespeicherten
-  Änderungen kommt eine Rückfrage
-- Nur ein Programmfenster gleichzeitig
+Aufbau wie in Version 1: Menüleiste, Werkzeugleiste mit Filtern, Kacheln statt
+Tabelle, Seitenleiste rechts, Statuszeile mit Farblegende.
+
+- **Kacheln:** alle gleich groß, mit dem Cover von Band 1 (ganz eingepasst),
+  Titel, Verlag (Verlagsfarbe), Typ, Komplett/Beendet (grün/rot), Besitz und
+  Gelesen mit „+1“-Knöpfen und Rückstand, VÖ +1 mit Statusfarbe
+  (Beendet/TBA/Gestoppt/NA; neue, noch nicht gespeicherte Termine rot; VÖ +2
+  und +3 im Tooltip). Der Rahmen zeigt den Status, Schilder auf dem Cover
+  „bestellt“ bzw. „abholbereit“.
+- **Bedienung:** Klick wählt eine Kachel aus, Doppelklick bearbeitet,
+  Rechtsklick öffnet das Kontextmenü (bei buchhandel.de suchen, neue
+  VÖ-Termine abfragen, Bestell-Markierung entfernen, Cover erneut suchen /
+  eigenes Bild / entfernen, Bearbeiten, Löschen).
+- **Menüs wie in Version 1:**
+  - *Datei:* Neuer Eintrag (Strg+N), Bearbeiten, Löschen, bei buchhandel.de
+    suchen (Strg+B), VÖ-Termine von buchhandel.de holen, Cover neu suchen,
+    CSV importieren/exportieren, Bestellung aus E-Mail (.eml) einlesen,
+    Bestellungen aus dem Postfach abrufen, von Google Drive laden
+  - *Konfigurieren:* Farben (einzeln abschaltbar), Konfiguration
+    (config.json), Postfach (IMAP), nach Bearbeitung zur Kachel springen,
+    Gestoppt: keine Berechnung
+  - *Hilfe:* LOG-Ordner öffnen, Über …
+- **Werkzeugleiste:** Rückgängig (Strg+Z), Wiederholen (Strg+Y), Speichern
+  (Strg+S, vorher Sicherung nach `BACKUP/`), zu Google Drive sichern,
+  ISBN-Abgleich / Bestellliste, VÖ-Termine holen; Filter Verlag, VÖ +1,
+  Bestellung und Typ; Sortierung nach Titel, Bänden, Gelesen, Rückstand, Typ,
+  Verlag, Zugang, VÖ +1, Komplett, Beendet, **Bestellt** und **Angekommen
+  (geliefert)** - auf- oder absteigend.
+- **Seitenleiste:** Suche (über alle Spalten), Statistik, Anzahl nach Verlag,
+  Anzahl nach Typ (Gesamt / Gelesen / Offen), Erscheinungstermine und
+  ausstehende Termine, Live-Log der Sitzung.
+- **Cover vom ersten Band:** werden nach dem Start im Hintergrund gesucht -
+  zuerst bei der Deutschen Nationalbibliothek, als Ausweichlösung im VLB
+  (buchhandel.de) - und im Ordner `covers/` abgelegt. Jeder Titel wird nur
+  einmal gesucht, ohne Treffer nach 30 Tagen erneut. „Datei → Cover neu
+  suchen …“ sucht fehlende oder alle Cover noch einmal (eigene Bilder bleiben).
+  Abschalten der automatischen Suche: `"cover_auto_lookup": false`.
+- Beim Schließen mit ungespeicherten Änderungen kommt eine Rückfrage; nur ein
+  Programmfenster gleichzeitig.
+
+Anders als in Version 1: .eml-Dateien lassen sich nicht per Ziehen und
+Ablegen auf das Fenster einlesen (gibt es in Flet nicht) - im Dateidialog
+lassen sich aber mehrere auf einmal wählen.
 
 ## Fahrplan
 
 1. ~~Kachelansicht mit Statusrahmen und +1-Knöpfen~~
 2. ~~Cover vom ersten Band~~
 3. Monatlicher Veröffentlichungskalender aus VÖ +1 bis VÖ +3
-4. Übrige Funktionen aus Version 1: Bearbeiten/Neu/Löschen, Bestellungen
-   aus E-Mails, ISBN-Abgleich und Bestellliste, VÖ-Termine von
-   buchhandel.de, Google-Drive-Sicherung, CSV-Import/-Export
+4. ~~Übrige Funktionen aus Version 1~~
 5. Release auf GitHub (exe-Build per `build.bat` gibt es schon)
 
 ## Start (Entwicklung)
@@ -88,8 +109,11 @@ eine laufende `MangaLibraryV2.exe` dort vorher beenden.
 
 ## Aufbau
 
-- `ui/` – die Flet-Oberfläche (`app.py` Hauptfenster, `tile.py` Kachel)
-- `gallery.py` – Status, Filter und Sortierung der Kachelansicht, ohne Oberfläche
+- `ui/` – die Flet-Oberfläche: `app.py` Hauptfenster, `tile.py` Kachel,
+  `sidebar.py` Seitenleiste, `dialogs.py`, `isbn_dialogs.py`,
+  `mail_dialogs.py` Dialoge, `actions_*.py` die Aktionen (Daten, Abfragen,
+  Cover), `common.py` gemeinsame Bausteine
+- `gallery.py` – Status, Filter, Sortierung und Seitenleisten-Zahlen, ohne Oberfläche
 - `covers.py` – Suche nach Band 1 bei der DNB, Cover-Dateien und eigene Bilder
 - `library.py`, `logic.py`, `database.py`, `sorting.py`, `colors.py` … –
   Datenhaltung und Logik, aus Version 1 übernommen
