@@ -5,7 +5,9 @@ Das Hauptfenster - aufgebaut wie Version 1, nur mit Kacheln statt Tabelle:
 - Menüleiste "Datei", "Konfigurieren", "Hilfe" mit allen Einträgen aus
   Version 1 (dazu "Cover neu suchen …")
 - Werkzeugleiste: Rückgängig, Wiederholen, Speichern, Google Drive, ISBN-
-  Abgleich, VÖ-Termine, Filter (Verlag, VÖ +1, Bestellung, Typ), Sortierung
+  Abgleich, VÖ-Termine, VÖ-Kalender, Filter (Verlag, VÖ +1, Bestellung,
+  Typ), Sortierung
+- Veröffentlichungskalender je Monat (ui/calendar_dialog.py)
 - Kachelansicht (Klick wählt aus, Doppelklick bearbeitet, Rechtsklick öffnet
   das Kontextmenü)
 - Seitenleiste rechts (ui/sidebar.py): Suche, Statistik, Verlage, Typen,
@@ -24,6 +26,7 @@ buchhandel.de), ui/actions_covers.py (Cover).
 
 import inspect
 import threading
+from datetime import date
 
 import flet as ft
 
@@ -33,6 +36,7 @@ import config
 import database as db
 import gallery
 import logic
+import release_calendar
 from library import LibraryBuffer
 from ui import APP_TITLE
 from ui.actions_covers import CoverActions
@@ -157,10 +161,14 @@ class MangaApp(CoverActions, DataActions, LookupActions):
         self.sort_dir_btn = ft.IconButton(ft.Icons.ARROW_UPWARD, tooltip="Aufsteigend - klicken zum Umkehren",
                                           on_click=_handler(self._toggle_sort_direction))
         reset_btn = ft.TextButton("Filter zurücksetzen", on_click=_handler(self._reset_filters))
+        calendar_btn = ft.OutlinedButton(
+            "VÖ-Kalender", icon=ft.Icons.CALENDAR_MONTH, on_click=_handler(self.open_calendar),
+            tooltip="Veröffentlichungen eines Monats, nach Erscheinungstag (Strg+K)",
+        )
 
         toolbar = ft.Row(
             [self.undo_btn, self.redo_btn, _separator(), self.save_btn, _separator(),
-             upload_btn, _separator(), isbn_btn, vlb_btn],
+             upload_btn, _separator(), isbn_btn, vlb_btn, calendar_btn],
             spacing=6, wrap=True, vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
         filters = ft.Row(
@@ -175,7 +183,7 @@ class MangaApp(CoverActions, DataActions, LookupActions):
         )
         self.search_field = ft.TextField(dense=True, expand=True, prefix_icon=ft.Icons.SEARCH, bgcolor="#FFFFFF",
                                          on_change=self._on_search_change)
-        self.sidebar = Sidebar(self.search_field)
+        self.sidebar = Sidebar(self.search_field, on_open_month=self._open_calendar_month)
         self.sidebar_box = ft.Container(self.sidebar.control, width=300)
 
         self.status_text = ft.Text(size=12)
@@ -257,6 +265,8 @@ class MangaApp(CoverActions, DataActions, LookupActions):
             self._item("VÖ-Termine von buchhandel.de holen …", self.start_vlb_lookup, icon=ft.Icons.EVENT,
                        tooltip="Neue Werte erscheinen rot in VÖ +1 bis VÖ +3 und werden erst mit Speichern "
                                "übernommen."),
+            self._item("Veröffentlichungskalender …", self.open_calendar, "Strg+K", ft.Icons.CALENDAR_MONTH,
+                       tooltip="Veröffentlichungen eines Monats, nach Erscheinungstag"),
             self._item("Cover neu suchen …", self.open_cover_refresh, icon=ft.Icons.IMAGE_SEARCH,
                        tooltip="Cover von Band 1 erneut bei DNB und VLB suchen"),
             ft.Divider(height=1),
@@ -333,6 +343,15 @@ class MangaApp(CoverActions, DataActions, LookupActions):
         from ui.dialogs import open_about_dialog
 
         open_about_dialog(self.page, db.DB_FILE.parent)
+
+    def open_calendar(self, year=None, month=None):
+        from ui.calendar_dialog import CalendarDialog
+
+        CalendarDialog(self, year, month)
+
+    def _open_calendar_month(self, offset: int):
+        today = date.today()
+        self.open_calendar(*release_calendar.shift_month(today.year, today.month, offset))
 
     def open_log_folder(self):
         try:
@@ -679,6 +698,8 @@ class MangaApp(CoverActions, DataActions, LookupActions):
             self.add_entry()
         elif key == "B":
             self.search_on_buchhandel()
+        elif key == "K":
+            self.open_calendar()
 
     async def _close(self):
         """Fenster endgültig schließen - alles ist gespeichert oder bewusst
