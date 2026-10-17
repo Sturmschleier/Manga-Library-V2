@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Build und virtuelle Umgebungen
+build/
+dist/
+.venv-build/
+.venv/
+
+# Persönliche Zugangsdaten (Google Drive) – nie einchecken
+credentials.json
+token.json
+
+# Lokale Laufzeitdaten neben main.py bzw. der .exe
+manga_library.db
+config.json
+LOG/
+BACKUP/
+
+manga_library.db.*
+
+# Persönliche Sammlungsliste (CSV)
+Manga - Besitz.csv

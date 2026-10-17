@@ -1,0 +1,12 @@
+# Laufzeit-Abhängigkeiten (Entwicklung, Tests).
+#
+# Flet ist fest auf eine Version gesetzt: zwischen den Flet-Versionen ändert
+# sich die Programmierschnittstelle öfter so, dass bestehender Code bricht -
+# Anheben bewusst und gemeinsam mit einem Test der Oberfläche.
+flet==1.0.4
+flet-desktop==1.0.4
+google-api-python-client>=2.0.0
+google-auth-httplib2>=0.1.0
+google-auth-oauthlib>=1.0.0
+requests>=2.28.0
+keyring>=24.0.0
