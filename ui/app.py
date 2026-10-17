@@ -33,8 +33,9 @@ PAGE_BG = "#F2F4F7"
 
 
 class MangaApp:
-    def __init__(self, page: ft.Page):
+    def __init__(self, page: ft.Page, on_closed=None):
         self.page = page
+        self.on_closed = on_closed   # wird aufgerufen, sobald das Fenster endgültig geschlossen wird
         self.config_problem = config.problem()   # beschädigte config.json -> Hinweis nach dem Start
         config.ensure_file_exists()
         changelog.archive_old_entries()
@@ -381,12 +382,22 @@ class MangaApp:
         elif key == "Y":
             self.redo()
 
+    async def _close(self):
+        """Fenster endgültig schließen - alles ist gespeichert oder bewusst
+        verworfen. Flet wartet danach gelegentlich endlos auf das schon
+        geschlossene Fenster, und das Programm bliebe unsichtbar im
+        Task-Manager zurück; on_closed (main.py) beendet es dann nach kurzer
+        Frist selbst."""
+        self._closing = True
+        if self.on_closed:
+            self.on_closed()
+        await self.page.window.destroy()
+
     async def _on_window_event(self, e):
         if e.type != ft.WindowEventType.CLOSE:
             return
         if not self.buffer.dirty:
-            self._closing = True
-            await self.page.window.destroy()
+            await self._close()
             return
 
         async def answer(choice):
@@ -394,8 +405,7 @@ class MangaApp:
             if choice == "save" and not self.save():
                 return   # Speichern fehlgeschlagen: Fenster offen lassen
             if choice in ("save", "discard"):
-                self._closing = True
-                await self.page.window.destroy()
+                await self._close()
 
         self.page.show_dialog(ft.AlertDialog(
             modal=True,
