@@ -14,6 +14,8 @@ eingefroren und sprang beim Zurückkehren ins Fenster nach vorn.
 """
 
 import os
+import subprocess
+import sys
 import threading
 import webbrowser
 from collections.abc import Callable
@@ -21,7 +23,8 @@ from typing import Optional
 
 import flet as ft
 
-TEXT_MUTED = "#5F6673"
+from ui.theme import P
+
 MONO = "Consolas"
 
 
@@ -178,6 +181,20 @@ def run_background(page: ft.Page, func: Callable, on_done: Callable) -> None:
 
 
 def open_url(url: str) -> bool:
+    """Öffnet `url` im Standardbrowser und kehrt sofort zurück.
+
+    Unter Windows über einen eigenen kleinen Prozess (url.dll) statt
+    webbrowser.open: Das ruft ShellExecute im aktuellen Thread auf, und Flet
+    führt Klicks in einem Hintergrund-Thread ohne Nachrichtenschleife aus -
+    dort kann ShellExecute mit einem URL mehrere Sekunden hängen, bevor der
+    Browser überhaupt startet."""
+    if sys.platform == "win32":
+        try:
+            subprocess.Popen(["rundll32", "url.dll,FileProtocolHandler", url],
+                             creationflags=subprocess.CREATE_NO_WINDOW, close_fds=True)
+            return True
+        except OSError:
+            pass   # dann eben der Standardweg
     try:
         return webbrowser.open(url)
     except webbrowser.Error:
@@ -198,7 +215,7 @@ def section(title: str, controls: list, expand=None) -> ft.Control:
     return ft.Container(
         ft.Column([ft.Text(title, weight=ft.FontWeight.BOLD, size=13), *controls], spacing=4,
                   tight=expand is None, expand=expand is not None),
-        border=ft.Border.all(1, "#D5D9E0"), border_radius=8, padding=10, bgcolor="#FFFFFF", expand=expand,
+        border=ft.Border.all(1, P.border), border_radius=8, padding=10, bgcolor=P.surface, expand=expand,
     )
 
 

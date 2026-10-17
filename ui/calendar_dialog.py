@@ -16,14 +16,12 @@ import flet as ft
 
 import colors
 import release_calendar as rc
-from ui.common import TEXT_MUTED, close_dialog, copy_text
-
-TODAY_BG = "#E3EEFF"
-DAY_BG = "#F3F5F8"
-NEUTRAL_CHIP = "#E9ECF1"
+from ui.common import close_dialog, copy_text
+from ui.theme import P
 
 
 def _chip(text: str, bgcolor: str, color: str = colors.DEFAULT_TEXT_COLOR, bold: bool = False) -> ft.Control:
+    """Schild auf heller (Pastell-)Farbe - Schrift bleibt dunkel."""
     return ft.Container(
         ft.Text(text, size=12, color=color, weight=ft.FontWeight.BOLD if bold else None),
         bgcolor=bgcolor, border_radius=6, padding=ft.Padding.symmetric(horizontal=6, vertical=1),
@@ -38,7 +36,7 @@ class CalendarDialog:
         self.year, self.month = year or today.year, month or today.month
 
         self.title = ft.Text(size=20, weight=ft.FontWeight.BOLD, width=230, text_align=ft.TextAlign.CENTER)
-        self.summary = ft.Text(size=13, color=TEXT_MUTED)
+        self.summary = ft.Text(size=13, color=P.text_muted)
         self.list = ft.ListView(spacing=4, expand=True)
         self.copy_btn = ft.TextButton("Als Text kopieren", icon=ft.Icons.CONTENT_COPY, on_click=self._copy)
         header = ft.Row(
@@ -81,23 +79,23 @@ class CalendarDialog:
             rows.append(self._day_header("Ohne festen Tag", view.undated, False, False))
             rows += [self._release_row(r) for r in view.undated]
         if not rows:
-            rows.append(ft.Container(ft.Text("In diesem Monat sind keine Termine eingetragen.", color=TEXT_MUTED),
+            rows.append(ft.Container(ft.Text("In diesem Monat sind keine Termine eingetragen.", color=P.text_muted),
                                      padding=20))
         self.list.controls = rows
 
     def _day_header(self, label: str, releases, is_today: bool, is_past: bool) -> ft.Control:
         verlage = rc.verlage_of(releases)
-        chips = [_chip(v, colors.verlag_color(v) or NEUTRAL_CHIP) for v in verlage]
+        chips = [_chip(v, colors.verlag_color(v) or P.chip) for v in verlage]
         return ft.Container(
             ft.Row(
                 [ft.Text(label, weight=ft.FontWeight.BOLD, size=14, width=130,
-                         color=TEXT_MUTED if is_past else colors.DEFAULT_TEXT_COLOR),
-                 ft.Text("–", color=TEXT_MUTED),
+                         color=P.text_muted if is_past else P.text),
+                 ft.Text("–", color=P.text_muted),
                  ft.Row(chips, spacing=4, wrap=True, expand=True),
-                 ft.Text(f"{len(releases)} Bd.", size=12, color=TEXT_MUTED)],
+                 ft.Text(f"{len(releases)} Bd.", size=12, color=P.text_muted)],
                 spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            bgcolor=TODAY_BG if is_today else DAY_BG, border_radius=6,
+            bgcolor=P.today_bg if is_today else P.day_bg, border_radius=6,
             padding=ft.Padding.symmetric(horizontal=10, vertical=6), margin=ft.Margin.only(top=6),
         )
 
@@ -105,24 +103,24 @@ class CalendarDialog:
         image = self.app._image_for(r.titel)
         thumb = (ft.Image(src=image, width=26, height=38, fit=ft.BoxFit.CONTAIN, border_radius=2) if image
                  else ft.Container(width=26, height=38, border_radius=2,
-                                   bgcolor=colors.verlag_color(r.verlag) or NEUTRAL_CHIP))
+                                   bgcolor=colors.verlag_color(r.verlag) or P.chip))
         badges = []
         if r.abholbereit:
             badges.append(_chip("abholbereit", colors.ANGEKOMMEN_COLOR, bold=True))
         elif r.bestellt:
             badges.append(_chip("bestellt", colors.BESTELLT_COLOR, bold=True))
         if r.neu:
-            badges.append(_chip("neu, noch nicht gespeichert", NEUTRAL_CHIP, colors.NEW_VALUE_TEXT_COLOR))
-        title_color = colors.NEW_VALUE_TEXT_COLOR if r.neu else colors.DEFAULT_TEXT_COLOR
+            badges.append(_chip("neu, noch nicht gespeichert", P.chip, colors.NEW_VALUE_TEXT_COLOR))
+        title_color = colors.NEW_VALUE_TEXT_COLOR if r.neu else P.text
         return ft.Container(
             ft.Row(
                 [thumb,
                  ft.Text(rc.release_label(r), size=14, color=title_color, expand=True, max_lines=2,
                          overflow=ft.TextOverflow.ELLIPSIS),
                  *badges,
-                 ft.Text(r.verlag, size=12, color=TEXT_MUTED, width=150, max_lines=1,
+                 ft.Text(r.verlag, size=12, color=P.text_muted, width=150, max_lines=1,
                          overflow=ft.TextOverflow.ELLIPSIS),
-                 ft.Text(r.typ, size=12, color=TEXT_MUTED, width=80)],
+                 ft.Text(r.typ, size=12, color=P.text_muted, width=80)],
                 spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
             padding=ft.Padding.only(left=30, right=10, top=2, bottom=2), border_radius=6,

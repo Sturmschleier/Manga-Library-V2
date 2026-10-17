@@ -27,6 +27,7 @@ import colors
 import database as db
 import gallery
 import logic
+from ui.theme import P
 
 TILE_WIDTH = 220
 COVER_RATIO = 0.72          # Breite : Höhe eines typischen Manga-Covers
@@ -34,10 +35,7 @@ DETAILS_HEIGHT = 198        # feste Höhe aller Zeilen unter dem Cover
 TILE_ASPECT = TILE_WIDTH / (TILE_WIDTH / COVER_RATIO + DETAILS_HEIGHT)
 BORDER_WIDTH = 4
 RADIUS = 12
-TEXT_DARK = colors.DEFAULT_TEXT_COLOR
-TEXT_MUTED = "#5F6673"
-NEUTRAL_CHIP = "#E9ECF1"
-SELECTED_GLOW = "#3B5BA9"
+ON_PASTEL = colors.DEFAULT_TEXT_COLOR   # Schrift auf den hellen Verlags-/Statusfarben (beide Schemata)
 
 
 @dataclass
@@ -54,12 +52,15 @@ def _enabled(colors_enabled: dict, key: str) -> bool:
     return (colors_enabled or {}).get(key, True)
 
 
-def _chip(text: str, bgcolor: str, color: str = TEXT_DARK, tooltip: Optional[str] = None,
+def _chip(text: str, bgcolor: Optional[str], color: Optional[str] = None, tooltip: Optional[str] = None,
           bold: bool = False, expand=None) -> ft.Control:
+    """Kleines Schild; ohne Farbe (None) das neutrale des Farbschemas."""
+    if color is None:
+        color = P.text if bgcolor is None else ON_PASTEL
     return ft.Container(
         ft.Text(text, size=11, color=color, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
                 weight=ft.FontWeight.BOLD if bold else None),
-        bgcolor=bgcolor, border_radius=6, padding=ft.Padding.symmetric(horizontal=6, vertical=2),
+        bgcolor=bgcolor or P.chip, border_radius=6, padding=ft.Padding.symmetric(horizontal=6, vertical=2),
         tooltip=tooltip, expand=expand,
     )
 
@@ -67,13 +68,13 @@ def _chip(text: str, bgcolor: str, color: str = TEXT_DARK, tooltip: Optional[str
 def _cover(entry: dict, status: str, image, colors_enabled: dict) -> ft.Control:
     if image:
         face = ft.Container(image=ft.DecorationImage(src=image, fit=ft.BoxFit.CONTAIN),
-                            bgcolor="#EEF0F3", expand=True)
+                            bgcolor=P.cover_bg, expand=True)
     else:
         face = ft.Container(
             ft.Text((entry.get("titel") or "(ohne Titel)").strip(), size=17, weight=ft.FontWeight.BOLD,
-                    color=TEXT_DARK, text_align=ft.TextAlign.CENTER, max_lines=6,
+                    color=ON_PASTEL, text_align=ft.TextAlign.CENTER, max_lines=6,
                     overflow=ft.TextOverflow.ELLIPSIS),
-            bgcolor=colors.verlag_color(entry.get("verlag") or "") or "#E3E6EB",
+            bgcolor=colors.verlag_color(entry.get("verlag") or "") or P.chip,
             alignment=ft.Alignment.CENTER, padding=12, expand=True,
         )
     layers = [ft.Container(face, expand=True, clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
@@ -96,11 +97,11 @@ def _cover(entry: dict, status: str, image, colors_enabled: dict) -> ft.Control:
 def _counter(label: str, value: str, extra: str, tooltip: str, on_plus: Callable) -> ft.Control:
     return ft.Row(
         [
-            ft.Text(label, size=13, color=TEXT_MUTED, width=58),
-            ft.Text(value or "–", size=15, weight=ft.FontWeight.BOLD, color=TEXT_DARK),
-            ft.Text(extra, size=11, color=TEXT_MUTED, expand=True, max_lines=1),
+            ft.Text(label, size=13, color=P.text_muted, width=58),
+            ft.Text(value or "–", size=15, weight=ft.FontWeight.BOLD, color=P.text),
+            ft.Text(extra, size=11, color=P.text_muted, expand=True, max_lines=1),
             ft.IconButton(icon=ft.Icons.ADD_CIRCLE_OUTLINE, icon_size=22, tooltip=tooltip, on_click=on_plus,
-                          style=ft.ButtonStyle(padding=2), icon_color="#3B5BA9"),
+                          style=ft.ButtonStyle(padding=2), icon_color=P.accent),
         ],
         spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER, height=30,
     )
@@ -109,23 +110,23 @@ def _counter(label: str, value: str, extra: str, tooltip: str, on_plus: Callable
 def _ja_nein_chip(label: str, value: str, enabled: bool) -> ft.Control:
     value = (value or "").strip()
     color = colors.ja_nein_color(value) if enabled else None
-    return _chip(f"{label}: {value or '–'}", color or NEUTRAL_CHIP, tooltip=f"{label}: {value or 'nicht angegeben'}")
+    return _chip(f"{label}: {value or '–'}", color, tooltip=f"{label}: {value or 'nicht angegeben'}")
 
 
 def _voe_row(entry: dict, colors_enabled: dict) -> ft.Control:
     voe1 = (entry.get("voe_1") or "").strip()
     new_columns = logic.new_value_columns(entry)
-    bg = (colors.voe1_color(voe1) if _enabled(colors_enabled, "voe1") else None) or NEUTRAL_CHIP
-    text_color = colors.NEW_VALUE_TEXT_COLOR if "voe_1" in new_columns else TEXT_DARK
+    bg = colors.voe1_color(voe1) if _enabled(colors_enabled, "voe1") else None
+    text_color = colors.NEW_VALUE_TEXT_COLOR if "voe_1" in new_columns else None
     tooltip_lines = [f"{db.LABELS[c]}: {(entry.get(c) or '').strip() or '–'}"
                      + ("  (neu, noch nicht gespeichert)" if c in new_columns else "") for c in db.VOE_COLUMNS]
     more = [c for c in db.VOE_COLUMNS[1:] if (entry.get(c) or "").strip()]
     return ft.Row(
         [
-            ft.Icon(ft.Icons.EVENT, size=16, color=TEXT_MUTED),
+            ft.Icon(ft.Icons.EVENT, size=16, color=P.text_muted),
             _chip(voe1 or "–", bg, text_color, bold="voe_1" in new_columns, expand=True),
             ft.Text(f"+{len(more)}" if more else "", size=11,
-                    color=colors.NEW_VALUE_TEXT_COLOR if set(more) & set(new_columns) else TEXT_MUTED),
+                    color=colors.NEW_VALUE_TEXT_COLOR if set(more) & set(new_columns) else P.text_muted),
         ],
         spacing=4, height=24, tooltip="\n".join(tooltip_lines),
     )
@@ -141,14 +142,14 @@ def build_tile(entry: dict, image, actions: TileActions, colors_enabled: dict,
     verlag = (entry.get("verlag") or "").strip()
     typ = (entry.get("typ") or "").strip()
     rest = gallery.ruckstand(entry)
-    verlag_bg = (colors.verlag_color(verlag) if _enabled(colors_enabled, "verlag") else None) or NEUTRAL_CHIP
+    verlag_bg = colors.verlag_color(verlag) if _enabled(colors_enabled, "verlag") else None
 
     details = ft.Column(
         [
-            ft.Container(ft.Text(title, size=14, weight=ft.FontWeight.BOLD, color=TEXT_DARK, max_lines=2,
+            ft.Container(ft.Text(title, size=14, weight=ft.FontWeight.BOLD, color=P.text, max_lines=2,
                                  overflow=ft.TextOverflow.ELLIPSIS), height=38, tooltip=title),
             ft.Row([_chip(verlag or "–", verlag_bg, tooltip=f"Verlag: {verlag or '–'}"),
-                    ft.Text(typ, size=12, color=TEXT_MUTED, max_lines=1, expand=True)], spacing=6, height=22),
+                    ft.Text(typ, size=12, color=P.text_muted, max_lines=1, expand=True)], spacing=6, height=22),
             ft.Row([_ja_nein_chip("Komplett", entry.get("komplett"), _enabled(colors_enabled, "komplett_beendet")),
                     _ja_nein_chip("Beendet", entry.get("beendet"), _enabled(colors_enabled, "komplett_beendet"))],
                    spacing=6, height=22),
@@ -170,8 +171,8 @@ def build_tile(entry: dict, image, actions: TileActions, colors_enabled: dict,
         ),
         border=ft.Border.all(BORDER_WIDTH, gallery.STATUS_BORDER_COLORS[status]),
         border_radius=RADIUS,
-        bgcolor="#FFFFFF",
-        shadow=ft.BoxShadow(spread_radius=3, blur_radius=6, color=SELECTED_GLOW) if selected else None,
+        bgcolor=P.surface,
+        shadow=ft.BoxShadow(spread_radius=3, blur_radius=6, color=P.accent) if selected else None,
     )
     return ft.ContextMenu(
         content=ft.GestureDetector(

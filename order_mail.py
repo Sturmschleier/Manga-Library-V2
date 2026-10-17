@@ -8,14 +8,23 @@ noch Teile daraus (Adresse, Bestellnummer, Preise ...) werden gespeichert.
 Übernommen wird ausschließlich die Markierung "bestellt" am jeweiligen
 Bibliotheks-Eintrag.
 
-Erkannt wird das Layout der Konold-Bestellbestätigung: eine HTML-Tabelle mit
-je Artikel einer Zeile "Artikelname | Anzahl | Preis EUR". Andere Shops mit
-ähnlicher Tabellenstruktur funktionieren in der Regel ebenfalls.
+Erkannte Layouts:
+- Konold: HTML-Tabelle mit je Artikel einer Zeile "Artikelname | Anzahl |
+  Preis EUR"; Abholmail mit einer Tabelle "Artikel | Menge".
+- Thalia, Auftragseingangsbestätigung: Tabelle "Artikel | Preis | Menge |
+  Gesamt", die Artikelzelle "Buch <Titel> von <Autor> EAN: <Nummer>".
+- Thalia, Mails der Buchhandlung (Auftragsstatusänderung, Abholnummer): je
+  Artikel "Autor; Titel 08 [bestellt: 1 ST; geliefert: 0 ST]" - geliefert = 0
+  heißt bestellt, geliefert > 0 heißt abholbereit.
+Andere Shops mit ähnlicher Tabellenstruktur funktionieren in der Regel
+ebenfalls.
 """
 
+import html
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from difflib import SequenceMatcher
 from email import policy
 from email.parser import BytesParser
 from html.parser import HTMLParser
@@ -25,6 +34,11 @@ from logic import parse_int
 _PRICE_RE = re.compile(r"^\d[\d.,]*\s*(EUR|€)$", re.IGNORECASE)
 # "…04-EAN:9783755507260" am Ende des Artikelnamens
 _EAN_SUFFIX_RE = re.compile(r"[\s-]*EAN\s*:?\s*\d+\s*$", re.IGNORECASE)
+# Thalia: Warengruppe vor dem Titel und " von <Autor>" dahinter
+_THALIA_TYPE_RE = re.compile(r"^(Buch|Taschenbuch|Gebundenes Buch|Manga)\s+", re.IGNORECASE)
+# Thalia-Buchhandlung: "Autor; Titel 08 [bestellt: 1 ST; geliefert: 0 ST]"
+_THALIA_STATUS_RE = re.compile(r"([^\n\[\]]+?)\s*\[bestellt:\s*(\d+)\s*ST;\s*geliefert:\s*(\d+)\s*ST\]",
+                               re.IGNORECASE)
 
 KIND_ORDER = "bestellung"    # Bestellbestätigung: Artikel wurden bestellt
 KIND_PICKUP = "abholung"     # Abhol-Benachrichtigung: Artikel sind angekommen
@@ -35,6 +49,13 @@ KIND_PICKUP = "abholung"     # Abhol-Benachrichtigung: Artikel sind angekommen
 # logic.clear_fulfilled_marks), nicht schon beim nächsten "+1".
 FLAG_FIELD = {KIND_ORDER: "bestellt", KIND_PICKUP: "angekommen"}
 _BAND_RE = re.compile(r"^(?:band\s+|bd\s+|vol\s+|volume\s+)?(\d+)(?=\s|$)")
+_TRAILING_BAND_RE = re.compile(r"^(.*?)\s+(\d+)$")
+
+# Toleranter Vergleich nur für lange Titel - Schreibfehler der Händler
+# ("… in Friedeneden!" statt "Frieden!") sollen nicht zum Fehlschlag
+# führen, kurze Titel aber nicht verwechselt werden
+FUZZY_MIN_LENGTH = 20
+FUZZY_MIN_RATIO = 0.93
 
 
 @dataclass
@@ -109,13 +130,63 @@ def _clean_name(name: str) -> str:
     return _EAN_SUFFIX_RE.sub("", name).strip()
 
 
+def _thalia_table_name(cell: str) -> str:
+    """ "Buch Sanda 13 von Paru Itagaki EAN: 978…" -> "Sanda 13" """
+    name = _EAN_SUFFIX_RE.sub("", cell).strip()
+    name = _THALIA_TYPE_RE.sub("", name)
+    # der Autor steht hinter dem LETZTEN " von " - der Titel selbst kann eins
+    # enthalten ("Mit der Hilfe von Gaming-Wissen …")
+    return name.rsplit(" von ", 1)[0].strip() if " von " in name else name
+
+
+def _html_text(html_text: str) -> str:
+    """Grober Text der Mail: jedes Tag wird zum Zeilenumbruch."""
+    text = re.sub(r"<[^>]+>", "\n", html_text)
+    return html.unescape(text)
+
+
+def _parse_thalia_status(html_text: str) -> list[OrderItem]:
+    """Mails der Thalia-Buchhandlung (siehe Moduldoku)."""
+    items = []
+    for m in _THALIA_STATUS_RE.finditer(_html_text(html_text)):
+        name = re.sub(r"\s+", " ", m.group(1)).strip()
+        if "; " in name:
+            name = name.split("; ", 1)[1]   # "Autor; Titel 08" -> "Titel 08"
+        ordered, delivered = int(m.group(2)), int(m.group(3))
+        if delivered:
+            items.append(OrderItem(name, delivered, KIND_PICKUP))
+        else:
+            items.append(OrderItem(name, ordered, KIND_ORDER))
+    return items
+
+
+def _unique(items: list[OrderItem]) -> list[OrderItem]:
+    """Gleiche Artikel nur einmal (weitergeleitete Mails enthalten die
+    Artikelliste manchmal doppelt)."""
+    seen = set()
+    result = []
+    for item in items:
+        key = (item.name, item.kind)
+        if key not in seen:
+            seen.add(key)
+            result.append(item)
+    return result
+
+
 def parse_html(html_text: str) -> list[OrderItem]:
     """Liest die Artikel aus dem HTML einer Bestell-Mail. Die Art der Mail
-    ergibt sich aus der Tabellenstruktur (nicht aus Textbausteinen):
+    ergibt sich aus der Struktur (nicht aus Textbausteinen):
       - Bestellbestätigung: Zeilen "Name | Anzahl | Preis EUR"  (KIND_ORDER)
+      - Thalia-Bestätigung: Zeilen "Artikel | Preis | Menge | Gesamt"  (KIND_ORDER)
       - Abhol-Benachrichtigung ("… abholbereit"): keine Preise, stattdessen
         eine Tabelle mit den Spalten "Artikel | Menge"  (KIND_PICKUP)
+      - Thalia-Buchhandlung: "[bestellt: n ST; geliefert: m ST]" je Artikel
+        (KIND_ORDER bzw. KIND_PICKUP je Artikel)
     """
+    status_items = _parse_thalia_status(html_text)
+    if status_items:
+        return _unique(status_items)
+
     collector = _RowCollector()
     collector.feed(html_text)
     collector.close()
@@ -128,6 +199,10 @@ def parse_html(html_text: str) -> list[OrderItem]:
         if len(cells) >= 3 and cells[1].isdigit() and _PRICE_RE.match(cells[2]):
             ordered.append(OrderItem(_clean_name(cells[0]), int(cells[1]), KIND_ORDER))
             continue
+        # Thalia: Artikel | Preis | Menge | Gesamt
+        if len(cells) == 4 and _PRICE_RE.match(cells[1]) and cells[2].isdigit() and _PRICE_RE.match(cells[3]):
+            ordered.append(OrderItem(_thalia_table_name(cells[0]), int(cells[2]), KIND_ORDER))
+            continue
         # Abhol-Mail: Kopfzeile "Artikel | Menge", danach je Artikel "Name | Menge"
         if [c.casefold() for c in cells[:2]] == ["artikel", "menge"] and len(cells) == 2:
             in_pickup_table = True
@@ -138,7 +213,7 @@ def parse_html(html_text: str) -> list[OrderItem]:
                 continue
             in_pickup_table = False
 
-    items = ordered or picked_up
+    items = _unique(ordered or picked_up)
     if not items:
         raise ValueError(
             "In der E-Mail wurde keine Artikelliste gefunden "
@@ -212,6 +287,8 @@ def match_items(items, entries):
                 found = Match(item, entry, owned + 1)
                 break
         if found is None:
+            found = _fuzzy_match(item, name, candidates)
+        if found is None:
             unmatched.append(item)
             continue
 
@@ -225,6 +302,23 @@ def match_items(items, entries):
         elif found.band > matches[position[key]].band:
             matches[position[key]] = found
     return matches, already_owned, unmatched
+
+
+def _fuzzy_match(item, name, candidates):
+    """Letzter Versuch für lange Titel: Name ohne die Bandnummer am Ende ist
+    dem Titel sehr ähnlich (siehe FUZZY_MIN_RATIO)."""
+    m = _TRAILING_BAND_RE.match(name)
+    if not m:
+        return None
+    stem, band = m.group(1), int(m.group(2))
+    best, best_ratio = None, FUZZY_MIN_RATIO
+    for key, entry in candidates:
+        if len(key) < FUZZY_MIN_LENGTH:
+            continue
+        ratio = SequenceMatcher(None, stem, key).ratio()
+        if ratio >= best_ratio:
+            best, best_ratio = entry, ratio
+    return Match(item, best, band) if best is not None else None
 
 
 def new_marks(matches):

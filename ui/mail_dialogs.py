@@ -12,7 +12,8 @@ import flet as ft
 
 import mail_fetch
 import order_mail
-from ui.common import TEXT_MUTED, close_dialog, run_background
+from ui.common import close_dialog, run_background
+from ui.theme import P
 
 _SECURITY_LABELS = {"ssl": "SSL/TLS (Port 993)", "starttls": "STARTTLS (Port 143)"}
 _MANUAL = "Eigener Server / manuell"
@@ -41,7 +42,14 @@ def open_mail_settings_dialog(page: ft.Page) -> None:
     save_pw = ft.Checkbox(label="Passwort in den Windows-Anmeldeinformationen speichern", value=has_saved,
                           disabled=not mail_fetch.keyring_available())
     folder = ft.TextField(label="Ordner", value=s.folder, dense=True)
-    sender = ft.TextField(label="Absender enthält", value=s.sender, hint_text="leer = alle Absender", dense=True)
+    shop_names = {f[0]: name for name, f in mail_fetch.SHOP_FILTERS.items()}
+    sender = ft.Dropdown(
+        label="Absender enthält (Buchhändler)", value=shop_names.get(s.sender.casefold()),
+        text=shop_names.get(s.sender.casefold(), s.sender), editable=True, dense=True,
+        options=[ft.DropdownOption(key=name, text=name) for name in mail_fetch.SHOP_FILTERS],
+        tooltip="Auswahl setzt Absender- und Betreff-Filter für diesen Buchhändler; "
+                "ein anderer Absender lässt sich frei eintragen (leer = alle Absender)",
+    )
     subject = ft.TextField(label="Betreff enthält", value=s.subject, hint_text="leer = jeder Betreff", dense=True)
     days = number("Zeitraum (Tage zurück)", s.days_back)
     max_mails = number("Max. Mails je Abruf", s.max_messages)
@@ -59,8 +67,21 @@ def open_mail_settings_dialog(page: ft.Page) -> None:
             port.value = "993" if security.value == "ssl" else "143"
             page.update()
 
+    def apply_shop(_e):
+        if sender.value in mail_fetch.SHOP_FILTERS:
+            subject.value = mail_fetch.SHOP_FILTERS[sender.value][1]
+            page.update()
+
     preset.on_select = apply_preset
+    sender.on_select = apply_shop
     security.on_select = sync_port
+
+    def sender_filter() -> str:
+        """Gewählter Buchhändler -> dessen Absender-Filter, sonst der Freitext."""
+        text = (sender.text if sender.text is not None else sender.value or "").strip()
+        if text in mail_fetch.SHOP_FILTERS:
+            return mail_fetch.SHOP_FILTERS[text][0]
+        return text
 
     def current() -> mail_fetch.MailSettings:
         def as_int(field, default):
@@ -71,7 +92,7 @@ def open_mail_settings_dialog(page: ft.Page) -> None:
         return mail_fetch.MailSettings(
             host=(host.value or "").strip(), port=as_int(port, 993), security=security.value or "ssl",
             user=(user.value or "").strip(), folder=(folder.value or "").strip() or "INBOX",
-            sender=(sender.value or "").strip(), subject=(subject.value or "").strip(),
+            sender=sender_filter(), subject=(subject.value or "").strip(),
             days_back=as_int(days, 90), max_messages=as_int(max_mails, 30),
         )
 
@@ -122,7 +143,7 @@ def open_mail_settings_dialog(page: ft.Page) -> None:
             preset, host, ft.Row([port, security]), user, password, save_pw,
             ft.Text("Das Passwort steht nie in der config.json. Bei GMX, WEB.DE, Gmail u. ä. ist oft ein "
                     "App-Passwort bzw. die Freigabe des IMAP-Zugriffs in den Kontoeinstellungen nötig.",
-                    size=12, color=TEXT_MUTED),
+                    size=12, color=P.text_muted),
             folder, sender, subject, ft.Row([days, max_mails]), status,
         ], tight=True, spacing=10, scroll=ft.ScrollMode.AUTO), width=560, height=620),
         actions=[test_btn, ft.TextButton("Gespeichertes Passwort löschen", on_click=delete_pw),
@@ -154,7 +175,7 @@ def open_mail_select_dialog(page: ft.Page, mails: list, on_chosen: Callable[[lis
             ft.Container(ft.ListView(boxes, spacing=2), height=min(360, 40 * len(boxes) + 10))]
     if skipped:
         body.append(ft.Text(f"{skipped} weitere Mail(s) ohne auswertbare Artikelliste (z. B. Versandmitteilungen "
-                            "oder nicht lesbare Mails) wurden übersprungen.", size=12, color=TEXT_MUTED))
+                            "oder nicht lesbare Mails) wurden übersprungen.", size=12, color=P.text_muted))
     page.show_dialog(ft.AlertDialog(
         modal=True, title=ft.Text("Bestellungen aus dem Postfach"),
         content=ft.Container(ft.Column(body, tight=True, spacing=8), width=620),

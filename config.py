@@ -71,6 +71,9 @@ DEFAULTS = {
         "bestellt": True,          # Titel hellblau: nächster Band bestellt
         "angekommen": True,        # Titel mit rotem Balken: Band abholbereit
     },
+    # Farbschema: "system" (wie Windows), "light" oder "dark" - auch über
+    # "Konfigurieren → Darstellung"
+    "theme_mode": "system",
 }
 
 
@@ -79,6 +82,7 @@ ALLOWED_VALUES = {
     "isbn_fallback_provider": ("buchhandel.de", "manga-passion"),
     "mail_imap_security": ("ssl", "starttls"),
     "csv_delimiter": (";", ",", "\t"),
+    "theme_mode": ("system", "light", "dark"),
 }
 
 

@@ -17,7 +17,8 @@ import appinfo
 import config
 import database as db
 import logic
-from ui.common import MONO, TEXT_MUTED, close_dialog, copy_text, open_path, open_url
+from ui.common import MONO, close_dialog, copy_text, open_path, open_url
+from ui.theme import P
 
 TYP_OPTIONEN = ["Manga", "Manhwa", "Light Novel"]
 JA_NEIN_OPTIONEN = ["Ja", "Nein"]
@@ -84,7 +85,7 @@ def open_entry_dialog(page: ft.Page, title: str, on_save: Callable[[dict], None]
             row("voe_1", "voe_2", "voe_3"),
             row("kommentar"),
             ft.Text("Datumswerte als TT.MM.JJJJ oder MM.JJJJ; Freitext wie „TBA“ oder „Fortlaufend“ ist erlaubt.",
-                    size=12, color=TEXT_MUTED),
+                    size=12, color=P.text_muted),
             error,
         ],
         spacing=12, tight=True,
@@ -132,7 +133,7 @@ def open_config_dialog(page: ft.Page, on_saved: Callable) -> None:
             ft.Text("z.B. „isbn_shop_name“/„isbn_shop_url_template“ (Standard-Buchhändler für gefundene ISBNs, "
                     "{isbn} wird durch die jeweilige ISBN ersetzt), „isbn_fallback_provider“ (\"buchhandel.de\" "
                     "oder \"manga-passion\"), „follow_selection_after_edit“, „sidebar_width_fraction“, "
-                    "„cover_auto_lookup“.", size=12, color=TEXT_MUTED),
+                    "„cover_auto_lookup“.", size=12, color=P.text_muted),
             editor, error,
         ], tight=True, spacing=8), width=640),
         actions=[ft.FilledButton("Speichern", on_click=save),
@@ -197,7 +198,7 @@ def open_cover_refresh_dialog(page: ft.Page, counts: dict, on_start: Callable[[b
                     "als Ausweichlösung im VLB (buchhandel.de). Läuft im Hintergrund - die Bibliothek "
                     "bleibt bedienbar."),
             group,
-            ft.Text("Selbst gewählte Bilder bleiben immer erhalten.", size=12, color=TEXT_MUTED),
+            ft.Text("Selbst gewählte Bilder bleiben immer erhalten.", size=12, color=P.text_muted),
         ], tight=True, spacing=10), width=520),
         actions=[ft.FilledButton("Suche starten", on_click=start),
                  ft.TextButton("Abbrechen", on_click=lambda _e: close_dialog(page))],
@@ -245,7 +246,7 @@ def open_vlb_dialog(page: ft.Page, counts: dict, pause: float, on_start: Callabl
                     "„Speichern“ (vorher mit „Rückgängig“ zurücknehmbar)."),
             group,
             ft.Text("Übersprungen werden: Komplett = Ja sowie VÖ +1 = Fortlaufend, Gestoppt oder Beendet.",
-                    size=12, color=TEXT_MUTED),
+                    size=12, color=P.text_muted),
             estimate,
         ], tight=True, spacing=10), width=560),
         actions=[start_btn, ft.TextButton("Abbrechen", on_click=lambda _e: close_dialog(page))],

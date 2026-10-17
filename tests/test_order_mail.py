@@ -209,3 +209,58 @@ def test_parse_message_with_unknown_charset_raises_value_error():
     )
     with pytest.raises(ValueError, match="nicht gelesen werden"):
         order_mail.parse_message_bytes(raw)
+
+
+# ---------------------------------------------------------------- Thalia
+
+_THALIA_ROW = ("<tr><td>Buch<br>{name}<br>von {author}<br>EAN: 9783753945439</td>"
+               "<td>16,00 €</td><td>{qty}</td><td>16,00 €</td></tr>")
+
+
+def _thalia_order(*items):
+    rows = "".join(_THALIA_ROW.format(name=n, author=a, qty=q) for n, a, q in items)
+    table = "<table><tr><td>Artikel</td><td>Preis</td><td>Menge</td><td>Gesamt</td></tr>" + rows + "</table>"
+    return "<html><body>" + table + table + "</body></html>"   # weitergeleitet: Liste doppelt
+
+
+def test_thalia_order_confirmation():
+    items = order_mail.parse_html(_thalia_order(
+        ("Solo Leveling: Ragnarok 02", "Jin (redice Studio)", 1),
+        ("Der konkurrenzlose Weise - Mit der Hilfe von Gaming-Wissen zur Nummer Eins 12", "Shinkoshoto", 1),
+    ))
+    assert [(i.name, i.menge, i.kind) for i in items] == [
+        ("Solo Leveling: Ragnarok 02", 1, order_mail.KIND_ORDER),
+        ("Der konkurrenzlose Weise - Mit der Hilfe von Gaming-Wissen zur Nummer Eins 12", 1, order_mail.KIND_ORDER),
+    ]
+
+
+def _thalia_store(*items):
+    paras = "".join(
+        f'<p class="middlepos">{a}; {n} [bestellt: 1 ST; geliefert: {d} ST]</p>'
+        f'<p class="smallpos">9783753945439 [Buch (dtsch)] 8,00 EUR</p>'
+        for a, n, d in items
+    )
+    return f"<html><body><table><tr><td><div>{paras}</div></td></tr></table></body></html>"
+
+
+def test_thalia_store_mail_ordered_and_ready_per_item():
+    items = order_mail.parse_html(_thalia_store(("Ryoko", "Liar Satsuki Can See Death 8", 0),
+                                                ("JIN (REDICE STUDIO)", "Solo Leveling: Ragnarok 02", 1)))
+    assert [(i.name, i.kind) for i in items] == [
+        ("Liar Satsuki Can See Death 8", order_mail.KIND_ORDER),
+        ("Solo Leveling: Ragnarok 02", order_mail.KIND_PICKUP),
+    ]
+
+
+def test_fuzzy_match_tolerates_typos_in_long_titles():
+    title = "Vom Landei zum Schwertheiligen - Ich bin nur ein alter Schwertmeister vom Land"
+    item = order_mail.OrderItem(title.replace("Schwertmeister", "Schwertmeisster") + " 09")
+    matches, _owned, unmatched = order_mail.match_items([item], [_entry(title, 8)])
+    assert [(m.entry["titel"], m.band) for m in matches] == [(title, 9)]
+    assert unmatched == []
+
+
+def test_fuzzy_match_not_for_short_titles():
+    item = order_mail.OrderItem("Sandb 12")
+    matches, _owned, unmatched = order_mail.match_items([item], [_entry("Sanda", 11)])
+    assert matches == [] and unmatched == [item]
