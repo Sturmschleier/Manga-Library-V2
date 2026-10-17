@@ -1,6 +1,7 @@
 # Manga Library V2
 
 [![Tests](https://github.com/Sturmschleier/Manga-Library-V2/actions/workflows/tests.yml/badge.svg)](https://github.com/Sturmschleier/Manga-Library-V2/actions/workflows/tests.yml)
+[![Release](https://img.shields.io/github/v/release/Sturmschleier/Manga-Library-V2)](https://github.com/Sturmschleier/Manga-Library-V2/releases/latest)
 
 Version 2 der Manga- & Light-Novel-Bibliothek, diesmal mit einer
 [Flet](https://flet.dev)-Oberfläche. Statt einer Tabelle gibt es eine
@@ -11,9 +12,21 @@ Version 1 (Qt/PySide6) liegt weiter im eigenen Repository
 Versionen sind komplett getrennt. Die Datenbank (`manga_library.db`) hat
 dasselbe Format und lässt sich also übernehmen.
 
-> **Stand:** Entwicklungsversion mit allen Funktionen aus Version 1, als
-> Kachelansicht. Es fehlen noch der Veröffentlichungskalender und das Release
-> (siehe Fahrplan).
+## Herunterladen und starten
+
+1. Unter [Releases](https://github.com/Sturmschleier/Manga-Library-V2/releases/latest)
+   `MangaLibraryV2.exe` herunterladen (Windows, kein Python nötig).
+2. In einen eigenen Ordner legen und starten. Die exe legt ihre Daten neben
+   sich ab: `manga_library.db`, `config.json`, `covers/`, `LOG/`, `BACKUP/`.
+   Für Google Drive gehört `credentials.json` ebenfalls in diesen Ordner.
+3. Wer die Sammlung aus Version 1 übernehmen will, kopiert deren
+   `manga_library.db` (und gern `config.json`) in den Ordner.
+
+Beim allerersten Start entpackt die exe das Programmfenster einmalig nach
+`%USERPROFILE%\.flet\client` - das dauert ein paar Sekunden. Die exe ist
+nicht signiert; Windows SmartScreen kann deshalb beim ersten Start warnen
+(„Weitere Informationen → Trotzdem ausführen“). Prüfsumme und
+Herkunftsnachweis siehe Release-Seite.
 
 ## Was geht
 
@@ -68,14 +81,6 @@ Anders als in Version 1: .eml-Dateien lassen sich nicht per Ziehen und
 Ablegen auf das Fenster einlesen (gibt es in Flet nicht) - im Dateidialog
 lassen sich aber mehrere auf einmal wählen.
 
-## Fahrplan
-
-1. ~~Kachelansicht mit Statusrahmen und +1-Knöpfen~~
-2. ~~Cover vom ersten Band~~
-3. ~~Monatlicher Veröffentlichungskalender aus VÖ +1 bis VÖ +3~~
-4. ~~Übrige Funktionen aus Version 1~~
-5. Release auf GitHub (exe-Build per `build.bat` gibt es schon)
-
 ## Start (Entwicklung)
 
 Voraussetzung: Python 3.10 oder neuer.
@@ -114,17 +119,40 @@ Flet-Programmfenster-Client). Was in die exe kommt, steht in
 (Arbeitsordner mit den echten Daten). Die Daten dort bleiben unberührt;
 eine laufende `MangaLibraryV2.exe` dort vorher beenden.
 
+## Neue Version veröffentlichen
+
+Die exe für ein Release baut **GitHub** (Workflow `.github/workflows/release.yml`)
+auf einem frischen Windows-Rechner mit denselben festen Versionen wie
+`build.bat`:
+
+1. `VERSION` in `appinfo.py` per Pull Request anheben (angezeigt unter
+   „Hilfe → Über …“), optional den Text in `docs/release-notes/v<VERSION>.md`
+   schreiben, mergen.
+2. Tag setzen und hochladen, z. B. `git tag v2.0.1 && git push origin v2.0.1`.
+3. Der Workflow prüft, dass der Tag zu `VERSION` passt und auf `main` liegt,
+   baut `MangaLibraryV2.exe`, berechnet die Prüfsumme, erstellt den
+   Herkunftsnachweis und legt das Release mit beiden Dateien an.
+
+Zum Ausprobieren ohne Release: Reiter **Actions → Release → Run workflow**; die
+exe steht dann als Artefakt am Durchlauf.
+
+**Herkunft prüfen:** `gh attestation verify MangaLibraryV2.exe --repo Sturmschleier/Manga-Library-V2`
+
 ## Aufbau
 
 - `ui/` – die Flet-Oberfläche: `app.py` Hauptfenster, `tile.py` Kachel,
   `sidebar.py` Seitenleiste, `dialogs.py`, `isbn_dialogs.py`,
-  `mail_dialogs.py` Dialoge, `actions_*.py` die Aktionen (Daten, Abfragen,
-  Cover), `common.py` gemeinsame Bausteine
+  `mail_dialogs.py`, `calendar_dialog.py` Dialoge, `actions_*.py` die
+  Aktionen (Daten, Abfragen, Cover), `theme.py` Farbschema, `common.py`
+  gemeinsame Bausteine
 - `gallery.py` – Status, Filter, Sortierung und Seitenleisten-Zahlen, ohne Oberfläche
-- `covers.py` – Suche nach Band 1 bei der DNB, Cover-Dateien und eigene Bilder
+- `covers.py` – Cover von Band 1 (DNB, VLB, manga-passion.de), Cover-Dateien und eigene Bilder
+- `release_calendar.py` – Termine eines Monats für den Veröffentlichungskalender
+- `order_mail.py`, `mail_fetch.py` – Bestellmails von Konold und Thalia (Datei und Postfach)
 - `library.py`, `logic.py`, `database.py`, `sorting.py`, `colors.py` … –
   Datenhaltung und Logik, aus Version 1 übernommen
 - `instance_lock.py` – verhindert ein zweites Programmfenster
+- `build.bat`, `build_exe.py`, `requirements-build.txt` – exe-Build; `.github/workflows/` – Tests und Release
 
 ## Lizenz
 

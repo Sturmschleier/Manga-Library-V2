@@ -3,9 +3,9 @@ appinfo.py
 Version und Programminformationen für den Dialog "Über …" - ohne
 Oberfläche, damit sie sich testen lassen.
 
-Neue Version veröffentlichen: VERSION anheben, mergen und das GitHub-Release
-mit dem Tag "v<VERSION>" anlegen (siehe ENTWICKLUNG.md, Kapitel "Neue Version
-veröffentlichen").
+Neue Version veröffentlichen: VERSION anheben, mergen und den Tag
+"v<VERSION>" pushen - GitHub baut die exe und legt das Release an (siehe
+README.md, Kapitel "Neue Version veröffentlichen").
 """
 
 import platform
