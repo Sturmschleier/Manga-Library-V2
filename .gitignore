@@ -18,6 +18,7 @@ manga_library.db
 config.json
 LOG/
 BACKUP/
+covers/
 
 manga_library.db.*
 

@@ -16,8 +16,15 @@ dasselbe Format und lässt sich also übernehmen.
 
 ## Was geht schon
 
-- **Kachelansicht** aller Titel: Cover-Fläche (vorerst Titel auf der
-  Verlagsfarbe), Verlag, Typ, Besitz, Gelesen und nächster Termin
+- **Kachelansicht** aller Titel: Cover von Band 1, Verlag, Typ, Besitz,
+  Gelesen und nächster Termin
+- **Cover vom ersten Band:** werden nach dem Start im Hintergrund bei der
+  Deutschen Nationalbibliothek gesucht (ISBN von Band 1, dann das Bild vom
+  DNB-Cover-Dienst) und im Ordner `covers/` abgelegt. Jeder Titel wird nur
+  einmal gesucht; ohne Treffer nach 30 Tagen erneut. Über das Menü oben
+  links auf dem Cover: erneut suchen, eigenes Bild wählen oder Cover
+  entfernen. Ohne Cover steht der Titel auf der Verlagsfarbe. Abschalten:
+  `"cover_auto_lookup": false` in `config.json`
 - **Farbige Rahmen** nach Status aus „VÖ +1“:
   Beendet (grün), TBA (orange), NA (pink), Gestoppt (rot), laufend (grau)
 - **„+1“-Knöpfe** für Besitz und Gelesen, mit denselben Regeln wie in
@@ -34,8 +41,7 @@ dasselbe Format und lässt sich also übernehmen.
 ## Fahrplan
 
 1. ~~Kachelansicht mit Statusrahmen und +1-Knöpfen~~
-2. Cover vom ersten Band: ISBN von Band 1 erfassen, Bild laden und
-   zwischenspeichern, eigenes Bild als Ausweichlösung
+2. ~~Cover vom ersten Band~~
 3. Monatlicher Veröffentlichungskalender aus VÖ +1 bis VÖ +3
 4. Übrige Funktionen aus Version 1: Bearbeiten/Neu/Löschen, Bestellungen
    aus E-Mails, ISBN-Abgleich und Bestellliste, VÖ-Termine von
@@ -52,7 +58,7 @@ python -m venv .venv
 .venv\Scripts\python main.py
 ```
 
-Daten (Datenbank, `config.json`, `LOG/`, `BACKUP/`) liegen neben `main.py`.
+Daten (Datenbank, `config.json`, `covers/`, `LOG/`, `BACKUP/`) liegen neben `main.py`.
 Wer die Sammlung aus Version 1 übernehmen will, kopiert dessen
 `manga_library.db` dorthin.
 
@@ -67,6 +73,7 @@ Tests und Linter:
 
 - `ui/` – die Flet-Oberfläche (`app.py` Hauptfenster, `tile.py` Kachel)
 - `gallery.py` – Status, Filter und Sortierung der Kachelansicht, ohne Oberfläche
+- `covers.py` – Suche nach Band 1 bei der DNB, Cover-Dateien und eigene Bilder
 - `library.py`, `logic.py`, `database.py`, `sorting.py`, `colors.py` … –
   Datenhaltung und Logik, aus Version 1 übernommen
 - `instance_lock.py` – verhindert ein zweites Programmfenster

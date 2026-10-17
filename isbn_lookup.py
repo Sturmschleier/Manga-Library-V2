@@ -583,14 +583,11 @@ def _sru_diagnostics(root) -> list[str]:
     return messages
 
 
-def _run_dnb_query(
-    query: str, label: str, titel: str, band: int, verlag: Optional[str], typ: Optional[str],
-    log: Optional[list[str]],
-) -> tuple[Optional[str], str, list[Sonderausgabe]]:
-    """Führt eine einzelne SRU-Anfrage aus, sucht in den Treffern nach der
-    Bandnummer (Verlag und Typ als Zuordnungskriterien) und protokolliert
-    Anfrage + Ergebnis. Gibt (isbn_oder_None, confidence, sonderausgaben)
-    zurück - die ISBN ist immer die einer normalen Ausgabe."""
+def fetch_dnb_records(query: str, label: str, log: Optional[list[str]] = None) -> Optional[list]:
+    """Führt eine einzelne SRU-Anfrage aus und gibt die MARC-Records der
+    Antwort zurück (höchstens 20, neueste zuerst), oder None bei einem
+    Fehler (Netzwerk, kein XML, Fehlermeldung der DNB). Anfrage und Fehler
+    werden in `log` protokolliert."""
     params = {
         "version": "1.1",
         "operation": "searchRetrieve",
@@ -611,20 +608,20 @@ def _run_dnb_query(
     except requests.RequestException as exc:
         if log is not None:
             log.append(f"  DNB SRU Fehler ({label}):   {exc}")
-        return None, "keine", []
+        return None
 
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError as exc:
         if log is not None:
             log.append(f"  DNB SRU Fehler ({label}):   Antwort ist kein gültiges XML ({exc})")
-        return None, "keine", []
+        return None
 
     diagnostics = _sru_diagnostics(root)
     if diagnostics:
         if log is not None:
             log.append(f"  DNB SRU Fehler ({label}):   {'; '.join(diagnostics)}")
-        return None, "keine", []
+        return None
 
     # "{*}" = dieses Element unabhängig vom Namespace/Namespace-Präfix -
     # robust gegenüber Formatierungsdetails der DNB-Antwort, die ein
@@ -632,7 +629,44 @@ def _run_dnb_query(
     # könnten (z.B. ein Namespace-Präfix wie "<marc:datafield>"). Die
     # SRU-Hülle heißt ebenfalls <record>; gezählt werden nur die
     # eigentlichen MARC-Records (die mit <datafield>-Einträgen).
-    records = [r for r in root.findall(".//{*}record") if r.find("{*}datafield") is not None]
+    return [r for r in root.findall(".//{*}record") if r.find("{*}datafield") is not None]
+
+
+_YEAR_RE = re.compile(r"(1[89]\d\d|20\d\d)")
+
+
+def record_year(record) -> Optional[int]:
+    """Erscheinungsjahr eines Records aus 264$c bzw. 260$c (z.B. "2002",
+    "[2021]", "© 2019"), sonst None."""
+    for tag in ("264", "260"):
+        for df in _extract_datafields(record, tag):
+            match = _YEAR_RE.search(_subfield(df, "c") or "")
+            if match:
+                return int(match.group(1))
+    return None
+
+
+def _run_dnb_query(
+    query: str, label: str, titel: str, band: int, verlag: Optional[str], typ: Optional[str],
+    log: Optional[list[str]],
+) -> tuple[Optional[str], str, list[Sonderausgabe]]:
+    """Führt eine einzelne SRU-Anfrage aus, sucht in den Treffern nach der
+    Bandnummer (Verlag und Typ als Zuordnungskriterien) und protokolliert
+    Anfrage + Ergebnis. Gibt (isbn_oder_None, confidence, sonderausgaben)
+    zurück - die ISBN ist immer die einer normalen Ausgabe."""
+    records = fetch_dnb_records(query, label, log)
+    if records is None:
+        return None, "keine", []
+    return match_dnb_records(records, label, titel, band, verlag, typ, log)
+
+
+def match_dnb_records(
+    records: list, label: str, titel: str, band: int, verlag: Optional[str], typ: Optional[str],
+    log: Optional[list[str]] = None,
+) -> tuple[Optional[str], str, list[Sonderausgabe]]:
+    """Sucht in den Records einer SRU-Antwort nach der Bandnummer (Verlag
+    und Typ als Zuordnungskriterien) und protokolliert das Ergebnis.
+    Rückgabe wie _run_dnb_query."""
     scored = [(r, _band_match(r, band, titel)) for r in records]
     # Treffer im Bandfeld zuerst (sorted ist stabil: die DNB-Reihenfolge
     # bleibt innerhalb derselben Stärke erhalten)

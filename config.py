@@ -51,6 +51,9 @@ DEFAULTS = {
     "mail_max_messages": 30,
     # Oberfläche
     "follow_selection_after_edit": True,
+    # Cover vom ersten Band nach dem Start automatisch bei der DNB suchen
+    # (nur für Titel, für die noch keins gesucht wurde, siehe covers.py)
+    "cover_auto_lookup": True,
     "sidebar_width_fraction": 0.15,
     # Statistik: Titel mit VÖ +1 = "Gestoppt" aus Summen-/Bilanz-
     # Berechnungen (Statistik-Box, Gesamt/Gelesen/Offen je Typ) ausschließen
