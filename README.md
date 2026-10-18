@@ -115,6 +115,10 @@ Flet-Programmfenster-Client). Was in die exe kommt, steht in
 `build_exe.py`. Beim ersten Start entpackt die exe den Client einmalig nach
 `%USERPROFILE%\.flet\client`.
 
+Das Icon der exe und des Programmfensters ist `assets/MangaLibraryV2.ico`.
+Es wird von `assets/make_icon.py` gezeichnet (braucht Pillow) – zum Ändern
+dort anpassen und `python assets/make_icon.py` ausführen.
+
 `Build_work.bat` baut ebenso und kopiert die exe danach nach `..\WorkV2`
 (Arbeitsordner mit den echten Daten). Die Daten dort bleiben unberührt;
 eine laufende `MangaLibraryV2.exe` dort vorher beenden.
@@ -152,7 +156,7 @@ exe steht dann als Artefakt am Durchlauf.
 - `library.py`, `logic.py`, `database.py`, `sorting.py`, `colors.py` … –
   Datenhaltung und Logik, aus Version 1 übernommen
 - `instance_lock.py` – verhindert ein zweites Programmfenster
-- `build.bat`, `build_exe.py`, `requirements-build.txt` – exe-Build; `.github/workflows/` – Tests und Release
+- `build.bat`, `build_exe.py`, `requirements-build.txt` – exe-Build; `assets/` – Programm-Icon; `.github/workflows/` – Tests und Release
 
 ## Lizenz
 
