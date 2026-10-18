@@ -189,6 +189,7 @@ def test_type_matches_unknown_type_never_excludes():
 # ---------------------------------------------------------------------- _band_match
 
 FIELD, TITLE = isbn_lookup.BAND_IN_FIELD, isbn_lookup.BAND_IN_TITLE
+PATTERN, ADDITION = isbn_lookup.BAND_IN_TITLE_PATTERN, isbn_lookup.BAND_IN_TITLE_ADDITION
 
 
 def test_band_match_volume_field_with_and_without_leading_zero():
@@ -230,7 +231,32 @@ def test_band_match_title_text_needs_number_beyond_series_title():
     only_title = _record([("a", "Kaiju No. 8")])
     band_eight = _record([("a", "Kaiju No. 8 Band 8")])
     assert isbn_lookup._band_match(only_title, 8, "Kaiju No. 8") == 0
-    assert isbn_lookup._band_match(band_eight, 8, "Kaiju No. 8") == TITLE
+    assert isbn_lookup._band_match(band_eight, 8, "Kaiju No. 8") == PATTERN
+
+
+@pytest.mark.parametrize("title_a, titel, band, expected", [
+    # echte DNB-Vorabmeldungen (VLB-Daten) ohne Bandfeld
+    ("Wind Breaker 22", "Wind Breaker", 22, PATTERN),
+    ("Rairairai 05", "Rairairai", 5, PATTERN),
+    ("Mushoku Tensei: Die Schatten des Magiers 03", "Mushoku Tensei - Die Schatten des Magiers", 3, PATTERN),
+    ("The Grandmaster of Demonic Cultivation – Mo Dao Zu Shi 13 (Manhua)",
+     "The Grandmaster of Demonic Cultivation", 13, ADDITION),
+    ("The Grandmaster of Demonic Cultivation – Mo Dao Zu Shi 13 (Manhua)",
+     "The Grandmaster of Demonic Cultivation – Mo Dao Zu Shi", 13, PATTERN),
+    ("The Rising of the Shield Hero Light Novel 19", "The Rising of the Shield Hero", 19, PATTERN),
+    ("Blue Lock – Band 33", "BLUE LOCK", 33, PATTERN),
+    ("Wind Breaker, Bd. 22", "Wind Breaker", 22, PATTERN),
+    # kein "<Reihentitel> <Band>": bleibt titeltext
+    ("Konosuba! God's Blessing On This Wonderful World! Light Novel 10", "Konosuba!", 10, TITLE),
+    ("Villain to Kill 01-03 Staffelpaket", "Villain to Kill", 3, TITLE),
+    ("Villain to Kill 01-03 Staffelpaket", "Villain to Kill", 1, TITLE),
+    ("Mushoku Tensei: Die Schatten des Magiers 03", "Mushoku Tensei", 3, TITLE),
+    ("Wind Breaker 22", "Wind", 22, TITLE),
+    # die 8 aus dem Reihentitel ist keine Bandnummer
+    ("Kaiju No. 8", "Kaiju No. 8", 8, 0),
+])
+def test_band_match_title_pattern_series_and_band(title_a, titel, band, expected):
+    assert isbn_lookup._band_match(_record([("a", title_a)]), band, titel) == expected
 
 
 # ------------------------------------------------------ _run_dnb_query / Anfrage
@@ -283,6 +309,36 @@ def test_title_text_only_match_is_marked_uncertain(fake_dnb):
     assert isbn_lookup.lookup_isbn_dnb("Konosuba!", 10, verlag="Tokyopop", typ="Light Novel") == (
         "9783759332653", "titeltext", []
     )
+
+
+def test_series_and_band_title_with_publisher_counts_as_certain(fake_dnb):
+    vorab = _marc_xml([("a", "Wind Breaker 22")], "Carlsen", "9783551795274")
+    fake_dnb["responses"] = [_sru_response(vorab)]
+    assert isbn_lookup.lookup_isbn_dnb("Wind Breaker", 22, verlag="Carlsen Manga") == (
+        "9783551795274", "titel+verlag", []
+    )
+
+
+def test_series_and_band_title_without_matching_publisher_stays_uncertain(fake_dnb):
+    vorab = _marc_xml([("a", "Wind Breaker 22")], "Egmont", "9783551795274")
+    fake_dnb["responses"] = [_sru_response(vorab), _sru_response(vorab)]
+    assert isbn_lookup.lookup_isbn_dnb("Wind Breaker", 22, verlag="Carlsen Manga") == (
+        "9783551795274", "titeltext", []
+    )
+
+
+def test_exact_series_title_wins_over_spin_off_with_addition(fake_dnb):
+    spin_off = _marc_xml([("a", "One Piece – Heroines 1")], "Carlsen", "9783551795274")
+    regular = _marc_xml([("a", "One Piece 1")], "Carlsen", "9783753945811")
+    fake_dnb["responses"] = [_sru_response(spin_off, regular)]
+    assert isbn_lookup.lookup_isbn_dnb("One Piece", 1, verlag="Carlsen")[:2] == ("9783753945811", "titel+verlag")
+
+
+def test_special_edition_with_series_and_band_title_is_not_chosen(fake_dnb):
+    staffel = _marc_xml([("a", "Villain to Kill 01-03 Staffelpaket")], "papertoons", "9783551795274")
+    fake_dnb["responses"] = [_sru_response(staffel), _sru_response(staffel)]
+    isbn, confidence, _specials = isbn_lookup.lookup_isbn_dnb("Villain to Kill", 3, verlag="papertoons")
+    assert confidence != "titel+verlag"
 
 
 def test_record_with_invalid_isbn_is_skipped(fake_dnb):
@@ -366,9 +422,11 @@ def test_summary_lists_uncertain_hits_with_reason():
         isbn_lookup.LookupResult(1, "Sicher", "V", 2, "1", "dnb (band+verlag)"),
         isbn_lookup.LookupResult(2, "OhneVerlag", "V", 3, "2", "dnb (band_only)"),
         isbn_lookup.LookupResult(3, "NurTitel", "V", 4, "3", "dnb (titeltext)"),
+        isbn_lookup.LookupResult(4, "Vorab", "V", 5, "4", "dnb (titel+verlag)"),
     ])
     text = report.summary()
-    assert "davon sicher (DNB, Bandfeld + Verlag): 1" in text
+    assert "davon sicher (DNB, Band + Verlag): 2" in text
+    assert "Vorab Band" not in text
     assert "OhneVerlag Band 3 (V) → ISBN 2 [Verlag nicht bestätigt]" in text
     assert "NurTitel Band 4 (V) → ISBN 3 [Band nur im Titel erkannt]" in text
     assert "Sicher Band" not in text.split("prüfen:")[1]
