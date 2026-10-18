@@ -59,6 +59,7 @@ def main() -> int:
         "--file-version", f"{VERSION}.0",
         "--company-name", "Sturmschleier",
         "--copyright", "© 2026 Sturmschleier, MIT-Lizenz",
+        "--icon", str(ROOT / "assets" / "MangaLibraryV2.ico"),   # exe und Programmfenster, siehe assets/make_icon.py
         "--add-data", f"{drive_json};googleapiclient/discovery_cache/documents",
         "--hidden-import",
         "google_auth_httplib2",       # einzelnes Modul, wird von googleapiclient nur bei Bedarf geladen
