@@ -278,8 +278,12 @@ def _record_title_text(record) -> str:
 _VOLUME_SUBFIELDS = (("245", "n"), ("490", "v"), ("800", "v"), ("810", "v"), ("811", "v"), ("830", "v"))
 
 # Stärke eines Bandnummer-Treffers (siehe _band_match)
-BAND_IN_FIELD = 2   # Bandnummer im dafür vorgesehenen Unterfeld - zuverlässig
-BAND_IN_TITLE = 1   # nur im Titeltext erkannt - z.B. Sonderausgaben ohne Bandfeld
+BAND_IN_FIELD = 4          # Bandnummer im dafür vorgesehenen Unterfeld - zuverlässig
+BAND_IN_TITLE_PATTERN = 3  # 245$a ist genau "<Reihentitel> <Band>" - z.B. DNB-Vorabmeldungen
+BAND_IN_TITLE_ADDITION = 2 # wie oben, mit Zusatz "<Reihentitel> – <Zusatz> <Band>"; rangiert
+                           # hinter der genauen Form, damit "One Piece 1" vor
+                           # "One Piece – Heroines 1" gewählt wird
+BAND_IN_TITLE = 1          # nur im Titeltext erkannt - z.B. Sonderausgaben ohne Bandfeld
 
 
 def _record_volume_numbers(record) -> set[int]:
@@ -302,7 +306,8 @@ def _count_number(text: str, number: int) -> int:
 def _band_match(record, band: int, titel: Optional[str] = None) -> int:
     """
     Prüft, ob ein Record der gesuchte Band ist, und liefert die Stärke des
-    Treffers: BAND_IN_FIELD, BAND_IN_TITLE oder 0 (kein Treffer).
+    Treffers: BAND_IN_FIELD, BAND_IN_TITLE_PATTERN, BAND_IN_TITLE_ADDITION,
+    BAND_IN_TITLE oder 0 (kein Treffer).
 
     1. Hat der Record eigene Band-Unterfelder (siehe _VOLUME_SUBFIELDS),
        entscheiden ausschließlich diese. Eine Zahl im Reihentitel ("Kaiju
@@ -311,7 +316,9 @@ def _band_match(record, band: int, titel: Optional[str] = None) -> int:
        ... Light Novel 10") wird der Titeltext (245 $a/$b/$p) durchsucht.
        Die Zahl muss dort öfter vorkommen als im gesuchten Reihentitel
        `titel` selbst - bei "Kaiju No. 8" zählt eine 8 also erst, wenn sie
-       ein zweites Mal auftaucht.
+       ein zweites Mal auftaucht. Ist 245$a dabei genau "<Reihentitel>
+       <Band>" (siehe _title_is_series_and_band), gilt der Treffer als
+       stärker - zusammen mit dem Verlag als sichere Zuordnung.
     """
     numbers = _record_volume_numbers(record)
     if numbers:
@@ -324,7 +331,54 @@ def _band_match(record, band: int, titel: Optional[str] = None) -> int:
             if value:
                 parts.append(value)
     if _count_number(" ".join(parts), band) > _count_number(titel or "", band):
-        return BAND_IN_TITLE
+        pattern = max((_title_is_series_and_band(_subfield(df, "a") or "", titel, band)
+                       for df in _extract_datafields(record, "245")), default=0) if titel else 0
+        return pattern or BAND_IN_TITLE
+    return 0
+
+
+# Zusätze zwischen Reihentitel und Bandnummer, die die Zuordnung nicht in
+# Frage stellen ("The Rising of the Shield Hero Light Novel 19")
+_TITLE_TYPE_WORDS = ("light novel", "manga", "manhwa", "manhua")
+# Trenner, nach dem ein beliebiger Zusatz zum Reihentitel folgen darf
+# ("The Grandmaster of Demonic Cultivation – Mo Dao Zu Shi 13"). Bewusst
+# kein Doppelpunkt: der leitet eher Ableger ein ("Mushoku Tensei: Die
+# Schatten des Magiers" ist nicht die Reihe "Mushoku Tensei").
+_TITLE_ADDITION_SEPARATOR = re.compile(r"\s+[–—-]\s+")
+
+
+def _normalize_title(text: str) -> str:
+    """Titel ohne Groß-/Kleinschreibung, Satzzeichen und doppelte Leerzeichen."""
+    return " ".join(re.findall(r"\w+", text.translate(_NON_SORT_CHARS).casefold()))
+
+
+def _title_is_series_and_band(title_a: str, titel: str, band: int) -> int:
+    """
+    Prüft, ob der DNB-Titel (245$a) eindeutig "<Reihentitel> <Band>" ist -
+    so führen DNB-Vorabmeldungen (VLB-Daten) ohne eigenes Bandfeld den Band:
+    "Wind Breaker 22", "Rairairai 05", "Blue Lock – Band 33".
+    Die Bandnummer muss die LETZTE Zahl am Titelende sein (Klammerzusätze
+    wie "(Manhua)" ausgenommen), davor optional "Band"/"Bd.". Der Rest muss
+    nach Normalisierung dem Reihentitel entsprechen, wahlweise ergänzt um
+    eine Typangabe ("Light Novel") oder einen per Gedankenstrich abgetrennten
+    Zusatz ("– Mo Dao Zu Shi"). "Konosuba! God's Blessing ... Light Novel
+    10" für die Reihe "Konosuba!" passt dagegen nicht.
+    Liefert BAND_IN_TITLE_PATTERN, mit Zusatz BAND_IN_TITLE_ADDITION, sonst 0.
+    """
+    text = re.sub(r"(\s*\([^()]*\))+\s*$", "", title_a.translate(_NON_SORT_CHARS)).strip()
+    m = re.search(r"(\d+)$", text)
+    if not m or int(m.group(1)) != band:
+        return 0
+    prefix = re.sub(r"(?i)[\s,.:;–—-]*(?<!\w)(band|bd)[\s.]*$", "", text[:m.start()])
+    wanted = _normalize_title(titel)
+    found = _normalize_title(prefix)
+    if not wanted:
+        return 0
+    if found == wanted or any(found == f"{wanted} {word}" for word in _TITLE_TYPE_WORDS):
+        return BAND_IN_TITLE_PATTERN
+    if any(_normalize_title(prefix[:sep.start()]) == wanted
+           for sep in _TITLE_ADDITION_SEPARATOR.finditer(prefix)):
+        return BAND_IN_TITLE_ADDITION
     return 0
 
 
@@ -536,8 +590,11 @@ def lookup_isbn_dnb(
     eingetragene Verlag unter den Treffern vorkommt).
 
     Gibt (isbn_oder_None, confidence, sonderausgaben) zurück, confidence in
-    {"band+verlag", "band_only", "titeltext", "keine"}:
+    {"band+verlag", "titel+verlag", "band_only", "titeltext", "keine"}:
       - "band+verlag": Bandfeld und Verlag passen (sichere Zuordnung)
+      - "titel+verlag": kein Bandfeld, aber der Titel ist eindeutig
+                       "<Reihentitel> <Band>" und der Verlag passt (sicher,
+                       z.B. DNB-Vorabmeldungen)
       - "band_only":   Bandfeld passt, Verlag nicht bestätigt
       - "titeltext":   Bandnummer nur im Titeltext erkannt (z.B.
                        Sonderausgabe ohne Bandfeld) - bitte prüfen
@@ -660,6 +717,15 @@ def _run_dnb_query(
     return match_dnb_records(records, label, titel, band, verlag, typ, log)
 
 
+# Zuordnung im 1. Durchgang (Verlag passt) je nach Stärke des Band-Treffers
+_CONFIDENCE_WITH_PUBLISHER = {
+    BAND_IN_FIELD: "band+verlag",
+    BAND_IN_TITLE_PATTERN: "titel+verlag",
+    BAND_IN_TITLE_ADDITION: "titel+verlag",
+    BAND_IN_TITLE: "titeltext",
+}
+
+
 def match_dnb_records(
     records: list, label: str, titel: str, band: int, verlag: Optional[str], typ: Optional[str],
     log: Optional[list[str]] = None,
@@ -697,7 +763,7 @@ def match_dnb_records(
             isbn = _isbn_from_record(record)
             if isbn:
                 result_isbn = isbn
-                result_confidence = "band+verlag" if strength == BAND_IN_FIELD else "titeltext"
+                result_confidence = _CONFIDENCE_WITH_PUBLISHER[strength]
                 break
 
     # 2. Durchgang: nur Band (schwächere Zuordnung)
@@ -792,7 +858,8 @@ def lookup_isbn(
     Sucht die ISBN über die DNB (Band+Verlag, dann nur Band als schwächere
     Zuordnung).
     Gibt (isbn_oder_None, quelle, sonderausgaben) zurück; quelle in
-    {"dnb (band+verlag)", "dnb (band_only)", "dnb (titeltext)", "keine"}.
+    {"dnb (band+verlag)", "dnb (titel+verlag)", "dnb (band_only)", "dnb (titeltext)",
+    "keine"}.
     Die ISBN ist immer die der normalen Ausgabe, Sonderausgaben kommen
     getrennt (siehe lookup_isbn_dnb).
     """
@@ -829,6 +896,9 @@ SONDERAUSGABE_MARKER = "★"
 # order_mail.py) - das Ergebnisfenster zeigt dazu einen hellblauen Balken.
 BESTELLT_MARKER = "[bestellt]"
 
+# Zuordnungen, die ohne Prüfung als sicher gelten
+SICHERE_ZUORDNUNG = ("band+verlag", "titel+verlag")
+
 _UNSICHER_GRUND = {
     "band_only": "Verlag nicht bestätigt",
     "titeltext": "Band nur im Titel erkannt",
@@ -854,9 +924,9 @@ class LookupReport:
             )
         lines.append("")
         if self.gefunden:
-            sicher = [r for r in self.gefunden if "band+verlag" in r.quelle]
-            unsicher = [r for r in self.gefunden if "band+verlag" not in r.quelle]
-            lines.append(f"  davon sicher (DNB, Bandfeld + Verlag): {len(sicher)}")
+            sicher = [r for r in self.gefunden if any(c in r.quelle for c in SICHERE_ZUORDNUNG)]
+            unsicher = [r for r in self.gefunden if r not in sicher]
+            lines.append(f"  davon sicher (DNB, Band + Verlag): {len(sicher)}")
             lines.append(f"  davon unsicher (Verlag nicht bestätigt oder Band nur im Titel): {len(unsicher)}")
             if unsicher:
                 lines.append("")
