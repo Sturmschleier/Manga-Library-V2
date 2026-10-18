@@ -31,16 +31,72 @@ LINE_HEIGHT = 19
 ORDERED_BAR_WIDTH = 6   # hellblauer Balken vor bereits bestellten Bänden
 
 
+class SpinBox:
+    """Zahlenfeld mit Pfeilen nach oben/unten (wie QSpinBox in Version 1):
+    eintippen oder mit den Pfeilen um 1 ändern, begrenzt auf min..max."""
+
+    def __init__(self, page: ft.Page, label: str, value: int, minimum: int, maximum: int, width: int):
+        self.page, self.minimum, self.maximum = page, minimum, maximum
+        self.field = ft.TextField(label=label, value=str(value), dense=True, width=width,
+                                  input_filter=ft.NumbersOnlyInputFilter(), on_blur=lambda _e: self._clamp())
+        self.up = self._arrow(ft.Icons.ARROW_DROP_UP, 1, f"{label} +1")
+        self.down = self._arrow(ft.Icons.ARROW_DROP_DOWN, -1, f"{label} −1")
+        self.control = ft.Row([self.field, ft.Column([self.up, self.down], spacing=0, tight=True)],
+                              spacing=2, tight=True)
+
+    def _arrow(self, icon, step: int, tooltip: str) -> ft.Control:
+        return ft.Container(ft.Icon(icon, size=22), width=26, height=20, ink=True, border_radius=4,
+                            tooltip=tooltip, on_click=lambda _e: self._step(step))
+
+    def _number(self):
+        try:
+            return int(self.field.value or "")
+        except ValueError:
+            return None
+
+    def _set(self, value: int) -> None:
+        self.field.value = str(min(self.maximum, max(self.minimum, value)))
+        self.field.error = None
+        self.page.update()
+
+    def _step(self, step: int) -> None:
+        if self.field.disabled:
+            return
+        current = self._number()
+        self._set(self.minimum if current is None else current + step)
+
+    def _clamp(self) -> None:
+        current = self._number()
+        if current is not None:
+            self._set(current)
+
+    @property
+    def disabled(self) -> bool:
+        return bool(self.field.disabled)
+
+    @disabled.setter
+    def disabled(self, value: bool) -> None:
+        self.field.disabled = self.up.disabled = self.down.disabled = value
+        self.up.opacity = self.down.opacity = 0.35 if value else 1.0
+
+    def read(self):
+        """Der Wert (auf min..max begrenzt) oder None, wenn das Feld keine
+        Zahl enthält - dann zeigt das Feld einen Hinweis."""
+        current = self._number()
+        if current is None:
+            self.field.error = f"{self.field.label}?"
+            return None
+        return min(self.maximum, max(self.minimum, current))
+
+
 def open_isbn_lookup_dialog(page: ft.Page, on_submit: Callable[[tuple], None]) -> None:
     """`on_submit` bekommt ("month", monat, jahr, overwrite) oder
     ("status", "TBA"/"NA", overwrite)."""
     today = date.today()
     shop = ft.Dropdown(label="Bestellen bei", value=shops.active_name(), dense=True, width=220,
                        options=[ft.DropdownOption(key=n, text=n) for n in shops.available()])
-    month = ft.Dropdown(label="Monat", value=str(today.month), dense=True, width=110,
-                        options=[ft.DropdownOption(key=str(m), text=str(m)) for m in range(1, 13)])
-    year = ft.TextField(label="Jahr", value=str(today.year), dense=True, width=110,
-                        input_filter=ft.NumbersOnlyInputFilter())
+    month = SpinBox(page, "Monat", today.month, 1, 12, width=90)
+    year = SpinBox(page, "Jahr", today.year, 1900, 2100, width=110)
     overwrite = ft.Checkbox(label="Vorhandene ISBNs erneut prüfen (überschreiben)",
                             tooltip="Titel, für die es bereits einen ISBN-Cache-Eintrag für den aktuellen "
                                     "Band-Stand gibt, werden normalerweise übersprungen.")
@@ -51,7 +107,7 @@ def open_isbn_lookup_dialog(page: ft.Page, on_submit: Callable[[tuple], None]) -
 
     group = ft.RadioGroup(value="month", on_change=changed, content=ft.Column([
         ft.Radio(value="month", label="Nach Monat/Jahr (VÖ +1):"),
-        ft.Row([ft.Container(width=24), month, year]),
+        ft.Row([ft.Container(width=24), month.control, year.control]),
         ft.Radio(value="TBA", label='Alle Titel mit VÖ +1 = "TBA"'),
         ft.Radio(value="NA", label='Alle Titel mit VÖ +1 = "NA"'),
     ], tight=True))
@@ -59,13 +115,11 @@ def open_isbn_lookup_dialog(page: ft.Page, on_submit: Callable[[tuple], None]) -
     def start(_e):
         shops.set_active(shop.value or shops.active_name())   # Auswahl dauerhaft merken
         if group.value == "month":
-            try:
-                y = int(year.value or "")
-            except ValueError:
-                year.error = "Jahr?"
+            m, y = month.read(), year.read()
+            if m is None or y is None:
                 page.update()
                 return
-            selection = ("month", int(month.value), y, overwrite.value)
+            selection = ("month", m, y, overwrite.value)
         else:
             selection = ("status", group.value, overwrite.value)
         close_dialog(page)
