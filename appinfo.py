@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from importlib import metadata
 from typing import Optional
 
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 REPOSITORY_URL = "https://github.com/Sturmschleier/Manga-Library-V2"
 
 # Verwendete Bibliotheken: (Anzeigename, Paketnamen für die Versionsabfrage,
