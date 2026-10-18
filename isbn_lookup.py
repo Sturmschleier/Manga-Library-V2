@@ -104,7 +104,7 @@ def ensure_isbn_cache_table(db_path: str) -> None:
         conn.close()
 
 
-_ENTRY_KEYS = ("id", "titel", "verlag", "typ", "baende_bis", "voe_1")
+_ENTRY_KEYS = ("id", "titel", "verlag", "typ", "baende_bis", "voe_1", "bestellt")
 
 
 def _entries_with_cache(conn, entries=None) -> list[dict]:
@@ -824,6 +824,11 @@ class LookupResult:
 # diesem Zeichen golden hervor (siehe gui/isbn_view.py).
 SONDERAUSGABE_MARKER = "★"
 
+# Steht in der Bestellliste vor dem Titel, wenn genau der aufgeführte Band
+# schon als bestellt markiert ist (Markierung "bestellt", siehe
+# order_mail.py) - das Ergebnisfenster zeigt dazu einen hellblauen Balken.
+BESTELLT_MARKER = "[bestellt]"
+
 _UNSICHER_GRUND = {
     "band_only": "Verlag nicht bestätigt",
     "titeltext": "Band nur im Titel erkannt",
@@ -1070,7 +1075,8 @@ def bestellliste_markdown(
     Je Titel steht zuerst die normale Ausgabe (oder ein Fallback-Suchlink),
     darunter jede bekannte Sonderausgabe als eigene Zeile ("↳ Sonderausgabe:
     ..."). Gibt es für den Band beide, beginnen alle Zeilen dieses Titels
-    mit SONDERAUSGABE_MARKER - das Ergebnisfenster hebt sie golden hervor."""
+    mit SONDERAUSGABE_MARKER - das Ergebnisfenster hebt sie golden hervor.
+    Ist genau dieser Band schon bestellt, steht davor BESTELLT_MARKER."""
     ensure_isbn_cache_table(db_path)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -1094,6 +1100,8 @@ def bestellliste_markdown(
         band = _naechster_band(row["baende_bis"])
         row_specials = specials.get((row["titel"], row["baende_bis"]), [])
         marker = f"{SONDERAUSGABE_MARKER} " if row["cached_isbn"] and row_specials else ""
+        if band is not None and parse_int(row["bestellt"]) == band:
+            marker = f"{BESTELLT_MARKER} {marker}"
         prefix = f"| {cell(row['voe_1'])} | {marker}"
         suffix = f" | {cell(row['verlag'])} | {cell(band)} |"
         if row["cached_isbn"]:

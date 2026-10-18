@@ -548,3 +548,44 @@ def test_lookup_uses_unsaved_buffer_entries_instead_of_database(lookup_db, monke
     assert _cached(lookup_db)["Neu im Puffer"] == "9783753945811"
     liste = isbn_lookup.bestellliste_markdown(lookup_db, status="TBA", entries=entries)
     assert "| TBA | Neu im Puffer |" in liste and "Alpha" not in liste
+
+
+# ------------------------------------------------------------------ bereits bestellt
+
+def test_bestellliste_marks_band_that_is_already_ordered(lookup_db, monkeypatch):
+    results = {
+        "Alpha": ("9783753945811", "dnb (band+verlag)",
+                  [isbn_lookup.Sonderausgabe("9783759314086", "Alpha 2 Limited")]),
+        "Beta": ("9783551795274", "dnb (band+verlag)", []),
+        "Gamma": (None, "keine", []),
+    }
+    monkeypatch.setattr(isbn_lookup, "lookup_isbn", lambda titel, *args, **kw: results[titel])
+    entries = [
+        {"id": 1, "titel": "Alpha", "baende_bis": "1", "voe_1": "TBA", "bestellt": "2"},   # nächster Band bestellt
+        {"id": 2, "titel": "Beta", "baende_bis": "2", "voe_1": "TBA", "bestellt": "5"},    # anderer Band bestellt
+        {"id": 3, "titel": "Gamma", "baende_bis": "3", "voe_1": "TBA", "bestellt": " 4 "},
+    ]
+    isbn_lookup.fill_missing_isbns(lookup_db, only_status="TBA", entries=entries)
+
+    liste = isbn_lookup.bestellliste_markdown(lookup_db, status="TBA", entries=entries)
+    rows = [line for line in liste.splitlines() if line.startswith("| TBA")]
+    mark, star = isbn_lookup.BESTELLT_MARKER, isbn_lookup.SONDERAUSGABE_MARKER
+    assert rows[0].startswith(f"| TBA | {mark} {star} Alpha |")
+    assert rows[1].startswith(f"| TBA | {mark} {star} ↳ Sonderausgabe: Alpha 2 Limited |")
+    assert rows[2].startswith("| TBA | Beta |")
+    assert rows[3].startswith(f"| TBA | {mark} Gamma |") and "buchhandel.de" in rows[3]   # auch mit Fallback-Link
+    assert all(line.count("|") == 7 for line in rows)
+    assert mark not in isbn_lookup.LookupReport().summary()
+
+
+def test_bestellliste_reads_ordered_mark_from_database(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_FILE", tmp_path / "manga_library.db")
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
+    db.init_db()
+    db.replace_all([
+        {"titel": "Bestellt", "baende_bis": "1", "voe_1": "TBA", "bestellt": "2"},
+        {"titel": "Offen", "baende_bis": "1", "voe_1": "TBA"},
+    ])
+    liste = isbn_lookup.bestellliste_markdown(str(db.DB_FILE), status="TBA")
+    assert f"| TBA | {isbn_lookup.BESTELLT_MARKER} Bestellt |" in liste
+    assert "| TBA | Offen |" in liste
