@@ -316,12 +316,12 @@ def test_other_publisher_name_counts_when_owned_volume_confirms_series():
     assert result.status == "unklar"
 
 
-def test_light_novel_without_marker_when_no_hit_is_a_light_novel():
+def test_light_novel_never_takes_unmarked_volumes_even_without_publisher_check():
+    # "Goblin Slayer! 17" ist der Manga, nicht die Light Novel
     products = [product("Goblin Slayer! 17", "15.06.2026", publisher="Altraverse GmbH"),
-                product("Goblin Slayer! 16", "15.09.2025", publisher="Altraverse GmbH"),
-                product("Goblin Slayer! Year One 14", "10.08.2026", publisher="Altraverse GmbH")]
-    result = vlb.plan_entry(entry("Goblin Slayer LN", 16, typ="Light Novel", verlag="Altraverse"), products)
-    assert [v.band for v in result.volumes] == [17]
+                product("Goblin Slayer! 16", "15.09.2025", publisher="Altraverse GmbH")]
+    result = vlb.plan_entry(entry("Goblin Slayer! Light Novel", 16, typ="Light Novel", verlag="Altraverse"), products)
+    assert result.status == "unklar" and result.volumes == []
 
 
 def test_decomposed_umlauts_in_own_title_still_match():
@@ -330,13 +330,6 @@ def test_decomposed_umlauts_in_own_title_still_match():
     result = vlb.plan_entry(entry(titel, 7, verlag="Loewe Manga"), products)
     assert result.changes == {"voe_1": "08.10.2026"}
     assert "Schülerinnen" in vlb.search_query(entry(titel))
-
-
-def test_light_novel_in_title_counts_even_with_other_type():
-    products = [product("The Rising of the Shield Hero Light Novel 19", "11.11.2026"),
-                product("The Rising of the Shield Hero Light Novel 18", "08.07.2026")]
-    result = vlb.plan_entry(entry("The Rising of the Shield Hero – Light Novel", 18, voe_1="TBA"), products)
-    assert result.changes == {"voe_1": "11.11.2026"}
 
 
 def test_check_entries_retries_with_wildcard_when_nothing_matches():
