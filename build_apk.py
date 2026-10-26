@@ -38,6 +38,8 @@ OUT = ROOT / ".apk-out"     # bewusst außerhalb von .apk-src - sonst würde die
 DIST_APK = ROOT / "dist" / "MangaLibraryV2.apk"
 TOOLS_DIR = Path(os.environ.get("MANGALIB_ANDROID_TOOLS") or r"E:\Claude\.android-build")
 
+FLET_BUILD_DIR = "build"   # legt "flet build" im Quellordner an - wird nicht mit eingepackt
+
 # Nur für den PC bzw. den Build - gehört nicht in die App
 EXCLUDED_MODULES = {"build_exe.py", "build_apk.py", "drive_sync.py"}
 
@@ -51,10 +53,19 @@ def build_number(version: str) -> int:
 
 
 def stage() -> None:
-    """Füllt .apk-src mit Programmcode, Icon und pyproject.toml."""
-    if SRC.exists():
-        shutil.rmtree(SRC)
-    (SRC / "ui").mkdir(parents=True)
+    """Füllt .apk-src mit Programmcode, Icon und pyproject.toml. Der
+    Unterordner build/ (Flutter-Projekt und Zwischenstände von "flet build")
+    bleibt stehen: Er macht spätere Builds deutlich schneller, und ein noch
+    laufender Gradle-Hintergrundprozess hält dort Dateien offen."""
+    SRC.mkdir(exist_ok=True)
+    for child in SRC.iterdir():
+        if child.name == FLET_BUILD_DIR:
+            continue
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+    (SRC / "ui").mkdir()
     (SRC / "assets").mkdir()
     for path in ROOT.glob("*.py"):
         if path.name not in EXCLUDED_MODULES:
