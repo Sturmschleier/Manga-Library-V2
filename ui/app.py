@@ -187,9 +187,13 @@ class MangaApp(CoverActions, DataActions, LookupActions):
         filter_controls = [self.verlag_filter, self.voe1_filter, self.order_filter, self.typ_filter,
                            self.sort_choice, self.sort_dir_btn, reset_btn]
         if self.mobile:
-            # Handy: eine wischbare Zeile statt umbrechender Reihen
-            filters = ft.Row(filter_controls, spacing=8, scroll=ft.ScrollMode.AUTO,
-                             vertical_alignment=ft.CrossAxisAlignment.CENTER)
+            # Handy: Filter aufklappbar (Knopf neben der Suche). Ohne Scrollen,
+            # sonst schneidet die Zeile die Beschriftung über den Feldern ab.
+            filters = ft.Container(
+                ft.Row(filter_controls, spacing=8, run_spacing=12, wrap=True,
+                       vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=ft.Padding.only(top=8, bottom=4), visible=False,
+            )
         else:
             toolbar = ft.Row(
                 [self.undo_btn, self.redo_btn, _separator(), self.save_btn, _separator(),
@@ -238,9 +242,9 @@ class MangaApp(CoverActions, DataActions, LookupActions):
         self._apply_sidebar_width()
 
     def _build_mobile(self, filters):
-        """Aufbau auf dem Handy: Symbolzeile mit Menü, Suche, wischbare
-        Filterzeile, Kacheln, Statuszeile. Seitenleiste und Farblegende
-        stehen in der „Übersicht“ (_show_overview)."""
+        """Aufbau auf dem Handy: Symbolzeile mit Menü, Suche mit Knopf für
+        die aufklappbaren Filter, Kacheln, Statuszeile. Seitenleiste und
+        Farblegende stehen in der „Übersicht“ (_show_overview)."""
         def icon_btn(icon, tooltip, func, **kwargs):
             return ft.IconButton(icon, tooltip=tooltip, on_click=_handler(func), **kwargs)
 
@@ -260,10 +264,17 @@ class MangaApp(CoverActions, DataActions, LookupActions):
             ],
             spacing=0, scroll=ft.ScrollMode.AUTO, vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
+        def toggle_filters():
+            filters.visible = not filters.visible
+            filter_btn.selected = filters.visible
+            self.page.update()
+
+        filter_btn = icon_btn(ft.Icons.FILTER_LIST, "Filter und Sortierung", toggle_filters,
+                              selected_icon=ft.Icons.FILTER_LIST_OFF)
         self.grid.max_extent = TILE_WIDTH - 20
         footer = ft.Row([self.status_text, self.cover_status, self.cover_cancel_btn], spacing=8, wrap=True)
         self.page.add(ft.SafeArea(ft.Column(
-            [top, ft.Row([self.search_field]), filters, self.grid, footer],
+            [top, ft.Row([self.search_field, filter_btn]), filters, self.grid, footer],
             expand=True, spacing=4,
         ), expand=True))
 
@@ -271,11 +282,13 @@ class MangaApp(CoverActions, DataActions, LookupActions):
         """Handy: Seitenleiste (Statistik, Verlage, Typen, Termine, Live-Log)
         und Farblegende als Blatt von unten."""
         height = max(300, int((self.page.height or 700) * 0.8))
-        self.sidebar.control.expand = True   # scrollt im Blatt selbst
+        self.sidebar.control.scroll = None   # Seitenleiste und Legende scrollen gemeinsam
         self.page.show_dialog(ft.BottomSheet(
             ft.Container(
-                ft.Column([self.sidebar.control, ft.Divider(), self.legend], spacing=8, expand=True),
-                padding=12, height=height,
+                ft.Column([self.sidebar.control, ft.Divider(), self.legend], spacing=8, expand=True,
+                          scroll=ft.ScrollMode.AUTO),
+                # unten Platz für die Navigationsleiste von Android
+                padding=ft.Padding.only(left=12, right=12, top=4, bottom=48), height=height,
             ),
             show_drag_handle=True, scrollable=True,
         ))
@@ -525,6 +538,8 @@ class MangaApp(CoverActions, DataActions, LookupActions):
         CalendarDialog(self, year, month)
 
     def _open_calendar_month(self, offset: int):
+        if self.mobile:
+            close_dialog(self.page)   # die Übersicht, aus der der Monat gewählt wurde
         today = date.today()
         self.open_calendar(*release_calendar.shift_month(today.year, today.month, offset))
 
@@ -548,7 +563,7 @@ class MangaApp(CoverActions, DataActions, LookupActions):
     def _build_legend(self):
         """Farblegende wie in Version 1 (VÖ +1, Komplett/Beendet, Verlag,
         bestellt, angekommen, VÖ neu) und die Rahmenfarben der Kacheln."""
-        self.border_legend = ft.Row(spacing=8, tight=True)
+        self.border_legend = ft.Row(spacing=8, tight=True, wrap=True)
         return ft.Row(
             [
                 ft.Text("VÖ +1:", size=12),

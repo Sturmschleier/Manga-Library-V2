@@ -7,6 +7,10 @@ VÖ-Einträge (VÖ +1 bis VÖ +3) des Zwischenspeichers, also auch noch nicht
 gespeicherte Änderungen. Die Logik steckt in release_calendar.py.
 
 Ein Klick auf einen Titel öffnet dessen Bearbeiten-Dialog.
+
+Auf dem Handy (app.mobile) füllt das Fenster fast den ganzen Bildschirm,
+und jeder Titel steht in einer eigenen Zeile mit Schildern und Verlag
+darunter - die Spalten der PC-Ansicht passen dort nicht nebeneinander.
 """
 
 from datetime import date
@@ -32,10 +36,13 @@ class CalendarDialog:
     def __init__(self, app, year: Optional[int] = None, month: Optional[int] = None):
         self.app = app
         self.page = app.page
+        self.mobile = getattr(app, "mobile", False)
         today = date.today()
         self.year, self.month = year or today.year, month or today.month
 
-        self.title = ft.Text(size=20, weight=ft.FontWeight.BOLD, width=230, text_align=ft.TextAlign.CENTER)
+        self.title = ft.Text(size=18 if self.mobile else 20, weight=ft.FontWeight.BOLD,
+                             width=None if self.mobile else 230, expand=self.mobile or None,
+                             text_align=ft.TextAlign.CENTER)
         self.summary = ft.Text(size=13, color=P.text_muted)
         self.list = ft.ListView(spacing=4, expand=True)
         self.copy_btn = ft.TextButton("Als Text kopieren", icon=ft.Icons.CONTENT_COPY, on_click=self._copy)
@@ -48,12 +55,31 @@ class CalendarDialog:
             ],
             spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
+        if self.mobile:
+            self._build_mobile(header)
+            return
         width = min((self.page.width or 1400) - 80, 920)
         height = max(360, (self.page.height or 900) - 160)
         self.dialog = ft.AlertDialog(
             title=ft.Text("Veröffentlichungskalender"),
             content=ft.Container(ft.Column([header, self.summary, ft.Divider(height=1), self.list], spacing=8),
                                  width=width, height=height),
+            actions=[self.copy_btn, ft.FilledButton("Schließen", on_click=lambda _e: close_dialog(self.page))],
+        )
+        self._fill()
+        self.page.show_dialog(self.dialog)
+
+    def _build_mobile(self, header: ft.Row):
+        """Handy: fast bildschirmfüllend, ohne eigene Titelzeile (der Monat
+        steht im Kopf), damit auch im Querformat Platz für die Liste bleibt."""
+        header.controls[-1] = ft.IconButton(ft.Icons.TODAY, tooltip="Heute", on_click=lambda _e: self._today())
+        height = max(220, int(self.page.height or 700) - 150)
+        self.dialog = ft.AlertDialog(
+            inset_padding=ft.Padding.symmetric(horizontal=8, vertical=16),
+            content_padding=ft.Padding.only(left=10, right=10, top=12),
+            actions_padding=ft.Padding.only(left=10, right=10, bottom=8),
+            content=ft.Container(ft.Column([header, self.summary, ft.Divider(height=1), self.list], spacing=4),
+                                 width=self.page.width, height=height),
             actions=[self.copy_btn, ft.FilledButton("Schließen", on_click=lambda _e: close_dialog(self.page))],
         )
         self._fill()
@@ -86,6 +112,15 @@ class CalendarDialog:
     def _day_header(self, label: str, releases, is_today: bool, is_past: bool) -> ft.Control:
         verlage = rc.verlage_of(releases)
         chips = [_chip(v, colors.verlag_color(v) or P.chip) for v in verlage]
+        if self.mobile:
+            content = ft.Column([
+                ft.Row([ft.Text(label, weight=ft.FontWeight.BOLD, size=14, expand=True,
+                                color=P.text_muted if is_past else P.text),
+                        ft.Text(f"{len(releases)} Bd.", size=12, color=P.text_muted)]),
+                ft.Row(chips, spacing=4, run_spacing=4, wrap=True),
+            ], spacing=4, tight=True)
+            return ft.Container(content, bgcolor=P.today_bg if is_today else P.day_bg, border_radius=6,
+                                padding=ft.Padding.symmetric(horizontal=8, vertical=6), margin=ft.Margin.only(top=6))
         return ft.Container(
             ft.Row(
                 [ft.Text(label, weight=ft.FontWeight.BOLD, size=14, width=130,
@@ -112,6 +147,18 @@ class CalendarDialog:
         if r.neu:
             badges.append(_chip("neu, noch nicht gespeichert", P.chip, colors.NEW_VALUE_TEXT_COLOR))
         title_color = colors.NEW_VALUE_TEXT_COLOR if r.neu else P.text
+        if self.mobile:
+            details = ft.Row([*badges, ft.Text(f"{r.verlag} · {r.typ}" if r.typ else r.verlag, size=12,
+                                               color=P.text_muted)],
+                             spacing=6, run_spacing=2, wrap=True)
+            return ft.Container(
+                ft.Row([thumb, ft.Column([ft.Text(rc.release_label(r), size=14, color=title_color, max_lines=3,
+                                                  overflow=ft.TextOverflow.ELLIPSIS), details],
+                                         spacing=2, expand=True, tight=True)],
+                       spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=ft.Padding.only(left=4, right=4, top=4, bottom=4), border_radius=6,
+                on_click=lambda _e, entry_id=r.entry_id: self._edit(entry_id), ink=True,
+            )
         return ft.Container(
             ft.Row(
                 [thumb,
