@@ -126,3 +126,13 @@ def test_write_isbn_log_names_files_uniquely_and_keeps_configured_number(log_env
     files = sorted(p.name for p in log_env.glob("isbn_abgleich_*.log"))
     assert len(set(paths)) == 4 and len(files) == 2
     assert (log_env / files[-1]).read_text(encoding="utf-8").strip() == "Abgleich 3"
+
+
+def test_write_vlb_log_keeps_configured_number_and_leaves_other_logs(log_env):
+    _isbn_logs(log_env, 3)
+    config.set_value("vlb_log_keep", 2)
+    paths = [changelog.write_vlb_log([f"Abruf {i}"]) for i in range(4)]
+    files = sorted(p.name for p in log_env.glob("voe_termine_*.log"))
+    assert len(set(paths)) == 4 and len(files) == 2
+    assert (log_env / files[-1]).read_text(encoding="utf-8").strip() == "Abruf 3"
+    assert len(list(log_env.glob("isbn_abgleich_*.log"))) == 3

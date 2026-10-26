@@ -16,6 +16,9 @@ protokolliert.
 - Dateien LOG/bestellung_einlesen_*.log (ein Einlesen einer Bestellung je
   Datei, siehe write_order_log()): es bleiben nur die neuesten
   `order_log_keep` Dateien liegen (Standard 10).
+- Dateien LOG/voe_termine_*.log (ein Abruf der VÖ-Termine von buchhandel.de
+  je Datei, siehe write_vlb_log()): es bleiben nur die neuesten
+  `vlb_log_keep` Dateien liegen (Standard 10).
 - Datei LOG/fehler.log: unerwartete Programmfehler mit vollständigem
   Traceback (siehe log_error(), aufgerufen vom Fehler-Handler in main.py).
 """
@@ -35,6 +38,8 @@ ISBN_LOG_PREFIX = "isbn_abgleich_"
 ISBN_LOG_PATTERN = ISBN_LOG_PREFIX + "*.log"
 ORDER_LOG_PREFIX = "bestellung_einlesen_"
 ORDER_LOG_PATTERN = ORDER_LOG_PREFIX + "*.log"
+VLB_LOG_PREFIX = "voe_termine_"
+VLB_LOG_PATTERN = VLB_LOG_PREFIX + "*.log"
 
 _TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
@@ -118,6 +123,14 @@ def prune_order_logs(keep: Optional[int] = None) -> int:
     return _prune_logs(ORDER_LOG_PATTERN, keep)
 
 
+def prune_vlb_logs(keep: Optional[int] = None) -> int:
+    """Begrenzt LOG/voe_termine_*.log auf die neuesten `keep` Dateien
+    (Standard: config.json "vlb_log_keep", 10)."""
+    if keep is None:
+        keep = config.get_int("vlb_log_keep", 10)
+    return _prune_logs(VLB_LOG_PATTERN, keep)
+
+
 def _write_log(prefix: str, lines: list) -> str:
     """Schreibt `lines` als neue Datei LOG/<prefix><Datum>_<Uhrzeit>-<ms>.log
     und gibt den Pfad zurück. Der Name ist immer größer als alle vorhandenen
@@ -143,6 +156,15 @@ def write_order_log(lines: list) -> str:
     Dateien weg (siehe prune_order_logs). Gibt den Pfad zurück."""
     path = _write_log(ORDER_LOG_PREFIX, lines)
     prune_order_logs()
+    return path
+
+
+def write_vlb_log(lines: list) -> str:
+    """Protokoll eines Abrufs der VÖ-Termine als eigene Datei
+    LOG/voe_termine_<Datum>_<Uhrzeit>-<ms>.log; räumt danach alte Dateien
+    weg (siehe prune_vlb_logs). Gibt den Pfad zurück."""
+    path = _write_log(VLB_LOG_PREFIX, lines)
+    prune_vlb_logs()
     return path
 
 

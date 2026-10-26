@@ -82,6 +82,7 @@ class MangaApp(CoverActions, DataActions, LookupActions):
         changelog.archive_old_entries()
         changelog.prune_isbn_logs()
         changelog.prune_order_logs()
+        changelog.prune_vlb_logs()
         db.init_db()
         self.buffer = LibraryBuffer(db.load_all())   # Zwischenspeicher bis "Speichern"
         self._init_covers()
@@ -319,7 +320,8 @@ class MangaApp(CoverActions, DataActions, LookupActions):
         ])
         help_menu = ft.SubmenuButton(content=ft.Text("Hilfe"), controls=[
             self._item("LOG-Ordner öffnen", self.open_log_folder, icon=ft.Icons.FOLDER_OPEN,
-                       tooltip="Änderungsprotokoll, Protokolle von ISBN-Abgleich und Bestellungen, fehler.log"),
+                       tooltip="Änderungsprotokoll, Protokolle von ISBN-Abgleich, VÖ-Terminen und Bestellungen, "
+                               "fehler.log"),
             ft.Divider(height=1),
             self._item(f"Über {APP_TITLE} …", self.open_about, icon=ft.Icons.INFO_OUTLINE),
         ])

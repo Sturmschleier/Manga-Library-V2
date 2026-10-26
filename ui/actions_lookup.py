@@ -8,6 +8,7 @@ suchen" im Browser.
 
 import copy
 
+import changelog
 import database as db
 from ui.common import Busy, alert, open_url, run_background
 
@@ -125,7 +126,8 @@ class LookupActions:
                 cancel=busy.cancel_event, scope=scope, respect_skip=not single,
             )
 
-        run_background(self.page, run, lambda result, error: self._finish_vlb_lookup(busy, result, error, single))
+        run_background(self.page, run,
+                       lambda result, error: self._finish_vlb_lookup(busy, result, error, single, scope))
 
     @staticmethod
     def _single_vlb_message(r):
@@ -141,7 +143,7 @@ class LookupActions:
         text = f"{r.titel}\n\n{r.note or 'kein Ergebnis'}."
         return text + (f"\n\nGefunden: {found}." if found else "")
 
-    def _finish_vlb_lookup(self, busy, result, error, single=False):
+    def _finish_vlb_lookup(self, busy, result, error, single=False, scope=None):
         import vlb_lookup
 
         busy.close()
@@ -156,12 +158,18 @@ class LookupActions:
             changes = ", ".join(f"{db.LABELS[col]} = {value}" for col, value in r.changes.items())
             self._log(f"VÖ-Abgleich buchhandel.de: {r.titel}: {changes}")
 
+        try:
+            log_note = "\n\nProtokoll: " + changelog.write_vlb_log(vlb_lookup.build_log(
+                results, cancelled, applied, scope or vlb_lookup.SCOPE_ALL, single, db.LABELS))
+        except OSError as exc:
+            log_note = f"\n\nProtokoll konnte nicht geschrieben werden: {exc}"
+
         if single and results:
             r = results[0]
             if r.status == "fehler":
-                alert(self.page, "VÖ-Termine", f"{r.titel}\n\nAbfrage nicht möglich: {r.note}.")
+                alert(self.page, "VÖ-Termine", f"{r.titel}\n\nAbfrage nicht möglich: {r.note}." + log_note)
             else:
-                alert(self.page, "VÖ-Termine", self._single_vlb_message(r))
+                alert(self.page, "VÖ-Termine", self._single_vlb_message(r) + log_note)
             return
 
         errors = [r for r in results if r.status == "fehler"]
@@ -183,4 +191,5 @@ class LookupActions:
             text += "\n\nDer Abruf wurde vorzeitig beendet" + reason
         if applied:
             text += "\n\nDie neuen Werte sind rot und werden mit „Speichern“ übernommen."
+        text += log_note
         alert(self.page, "VÖ-Termine", text, "\n".join(details).strip())

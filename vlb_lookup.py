@@ -420,6 +420,7 @@ class SeriesResult:
     changes: dict = field(default_factory=dict)
     previous: dict = field(default_factory=dict)  # bisherige Werte dieser Felder (Schutz vor Zwischenänderungen)
     volumes: list = field(default_factory=list)   # gefundene neue Bände (Volume)
+    queries: list = field(default_factory=list)   # gestellte Suchanfragen (fürs Protokoll)
 
 
 def plan_entry(entry: dict, products: list[dict]) -> SeriesResult:
@@ -529,21 +530,99 @@ def check_entries(
             break
         if progress:
             progress(index, len(todo), entry.get("titel") or "")
+        queries = [search_query(entry)]
         try:
-            products = fetch(search_query(entry))
+            products = fetch(queries[0])
             alternative = None if products else fallback_query(entry)
             if alternative:
+                queries.append(alternative)
                 sleep(delay + random.uniform(0, jitter))
                 products = fetch(alternative)
         except VlbError as exc:
             errors += 1
-            results.append(SeriesResult(entry.get("id"), entry.get("titel") or "", "fehler", str(exc)))
+            results.append(SeriesResult(entry.get("id"), entry.get("titel") or "", "fehler", str(exc),
+                                        queries=queries))
             if errors >= MAX_CONSECUTIVE_ERRORS:
                 cancelled = True
                 break
         else:
             errors = 0
-            results.append(plan_entry(entry, products))
+            result = plan_entry(entry, products)
+            result.queries = queries
+            results.append(result)
         if index < len(todo) - 1:
             sleep(delay + random.uniform(0, jitter))
     return results, cancelled
+
+
+# ---------------------------------------------------------------------------
+# Protokoll
+# ---------------------------------------------------------------------------
+
+SCOPE_LABELS = {
+    SCOPE_ALL: "alle Serien",
+    SCOPE_DATE: "VÖ +1 mit Datum",
+    SCOPE_TBA: "VÖ +1 = TBA",
+    SCOPE_NA: "VÖ +1 = NA",
+}
+_LOG_SECTIONS = (
+    ("unklar", "Nicht eindeutig zuzuordnen"),
+    ("keine_neuen", "Keine neuen Termine"),
+    ("aktuell", "Termine bereits aktuell"),
+    ("fehler", "Fehler bei der Abfrage"),
+    ("uebersprungen", "Übersprungen"),
+)
+
+
+def build_log(results: list[SeriesResult], cancelled: bool, applied: list[SeriesResult],
+              scope: str = SCOPE_ALL, single: bool = False, labels: Optional[dict] = None,
+              when: Optional[datetime] = None) -> list[str]:
+    """
+    Baut die Zeilen des Protokolls "VÖ-Termine holen" (eine eigene Logdatei
+    je Abruf, siehe changelog.write_vlb_log). `applied` sind die Ergebnisse,
+    die tatsächlich eingetragen wurden (library.apply_vlb_dates); fehlt ein
+    "neu"-Ergebnis darin, wurde das Feld inzwischen von Hand geändert.
+    `labels` übersetzt Spaltennamen (voe_1 -> "VÖ +1").
+    """
+    when = when or datetime.now()
+    labels = labels or {}
+    applied_ids = {id(r) for r in applied}
+
+    def changes_text(r):
+        return ", ".join(f"{labels.get(c, c)}: {r.previous.get(c) or '(leer)'} -> {v}" for c, v in r.changes.items())
+
+    def details(r):
+        rows = [f"    Hinweis: {r.note}"] if r.note else []
+        rows += [f"    Suche: {q}" for q in r.queries]
+        rows += [f"    Gefunden: Band {v.band} | {v.date.text()} | ISBN {v.isbn or '-'} | {v.title}" for v in r.volumes]
+        return rows
+
+    def section(title, rows):
+        return ["", f"--- {title} ---", *(rows or ["  (keine)"])]
+
+    new = [r for r in results if r.status == "neu"]
+    lines = [
+        "=" * 78,
+        f"VÖ-Termine holen (buchhandel.de) - {when.strftime('%d.%m.%Y %H:%M:%S')}",
+        "=" * 78,
+        f"{'Auswahl:':<26}" + ("einzelner Titel" if single else SCOPE_LABELS.get(scope, scope)),
+        f"{'Serien abgefragt:':<26}{sum(1 for r in results if r.status != 'uebersprungen')}",
+        f"{'Neue Termine eingetragen:':<26}{len(applied)}",
+    ]
+    if cancelled:
+        lines.append(f"{'Vorzeitig beendet:':<26}ja")
+
+    rows = []
+    for r in new:
+        skipped = "" if id(r) in applied_ids else "NICHT eingetragen (Feld inzwischen geändert) - "
+        rows += [f"  {r.titel}: {skipped}{changes_text(r)}", *details(r)]
+    lines += section(f"Neue Termine ({len(new)})", rows)
+    for status, title in _LOG_SECTIONS:
+        group = [r for r in results if r.status == status]
+        if status == "uebersprungen":
+            rows = [f"  {r.titel}: {r.note}" for r in group]
+        else:
+            rows = [row for r in group for row in (f"  {r.titel}", *details(r))]
+        lines += section(f"{title} ({len(group)})", rows)
+    lines.append("")
+    return lines
