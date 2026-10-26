@@ -4,6 +4,7 @@ Abgleich laufen über einen echten Server auf 127.0.0.1."""
 import pytest
 
 import config
+import covers
 import database as db
 import device_sync
 
@@ -13,6 +14,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DB_FILE", tmp_path / "manga_library.db")
     monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.json")
     monkeypatch.setattr(device_sync, "SETTINGS_FILE", tmp_path / "sync_geraete.json")
+    monkeypatch.setattr(covers, "COVER_DIR", tmp_path / "covers")
     db.init_db()
     server = device_sync.Server()
     server.start(port=0)   # freier Port
@@ -53,8 +55,8 @@ def test_pair_and_sync_roundtrip(env):
 
     db.replace_all([{"titel": "Berserk"}])
     result = device_sync.sync_with(own, "127.0.0.1", port=env.port)
-    assert events == ["paired", "synced"]
-    assert result["received"] == {"created": 0, "updated": 0, "deleted": 0}
+    assert events == ["paired", "synced", "covers"]
+    assert result["received"] == {"created": 0, "updated": 0, "deleted": 0, "covers": 0}
     assert device_sync.peers()[own]["last_sync"]
 
 
@@ -72,3 +74,20 @@ def test_sync_from_unpaired_device_is_rejected(env):
         {"X-Manga-Device": "fremd", "X-Manga-Time": str(int(time.time())), "X-Manga-Sig": "x"}, port=env.port)
     assert status == 403
     assert "nicht gekoppelt" in json.loads(data)["error"]
+
+
+def test_cover_upload_must_be_requested(env):
+    import hashlib
+    import json
+
+    own = device_sync.device_id()
+    code = env.new_code()
+    device_sync.pair("127.0.0.1", code, port=env.port)
+    peer = device_sync.peers()[own]
+    con = device_sync._Connection(own, peer, "127.0.0.1", env.port)
+    data = b"x" * 2000
+    with pytest.raises(device_sync.SyncError, match="nicht angefordert"):
+        con.call("cover-put", data, {"Content-Type": "application/octet-stream", "X-Manga-File": "a.jpg",
+                                     "X-Manga-Sha": hashlib.sha1(data).hexdigest()})
+    assert not (covers.COVER_DIR / "a.jpg").exists()
+    assert json.loads(con.call("covers-done", b"{}")) == {"covers": 0}

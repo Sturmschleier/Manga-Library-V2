@@ -172,8 +172,15 @@ Abgeglichen wird der gespeicherte Stand (ungespeicherte Änderungen werden
 vorher gespeichert). Pro Eintrag gilt die zuletzt gespeicherte Fassung,
 Löschungen werden übertragen, Einträge mit gleichem Titel zusammengelegt. Vor
 jeder Änderung sichert die Bibliothek die Datenbank nach `BACKUP/…_vor-sync.db`.
-Einstellungen (`config.json`), eigene Cover und Passwörter bleiben auf dem
-Gerät; fehlende Cover werden nach dem Abgleich gesucht. Kopplungen stehen in
+
+**Cover** werden mit abgeglichen, samt Bilddateien – übertragen wird nur, was
+auf der anderen Seite fehlt oder anders aussieht. Pro Titel gilt: von Hand
+Entschiedenes (eigenes Bild, „Cover entfernen“, „Cover erneut suchen“ und
+„Cover neu suchen …“) vor automatisch Gefundenem, ein gefundenes Bild vor
+„nichts gefunden“, sonst die zuletzt geänderte Fassung. Ein eigenes Bild vom PC
+landet so auch auf dem Handy, und ein dort automatisch gefundenes Cover
+verdrängt es nicht. Was danach noch fehlt, sucht die Bibliothek selbst.
+Einstellungen (`config.json`) und Passwörter bleiben auf dem Gerät. Kopplungen stehen in
 `sync_geraete.json` neben der Datenbank. Nach dem Koppeln sind alle Anfragen
 signiert (HMAC), andere Geräte im WLAN werden abgewiesen. Am PC fragt die
 Windows-Firewall beim ersten Öffnen, ob der Zugriff im privaten Netzwerk erlaubt

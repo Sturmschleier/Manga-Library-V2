@@ -33,6 +33,8 @@ def summary(counts: dict) -> str:
     parts = [f"{counts.get('created', 0)} neu", f"{counts.get('updated', 0)} geändert"]
     if counts.get("deleted"):
         parts.append(f"{counts['deleted']} gelöscht")
+    if counts.get("covers"):
+        parts.append(f"{counts['covers']} Cover")
     return ", ".join(parts)
 
 
@@ -40,6 +42,9 @@ class SyncDialog:
     def __init__(self, app, mobile: bool = False):
         self.app = app
         self.page = app.page
+        # Eine laufende Cover-Suche könnte gleich übertragene Cover wieder
+        # überschreiben; reload_after_sync startet sie danach neu
+        app.cancel_cover_job()
         self.server = device_sync.Server(lambda event, info: on_ui(self.page, self._on_remote, event, info))
         muted = P.text_muted
 
@@ -138,7 +143,11 @@ class SyncDialog:
             self._status(f"Gekoppelt mit {info.get('name')}.", running=False)
         elif event == "synced":
             self.app.reload_after_sync(info.get("name"), info)
-            self._status(f"{info.get('name')} hat abgeglichen: {summary(info)}.", running=False)
+            self._status(f"{info.get('name')} gleicht ab: {summary(info)}. Cover folgen …")
+        elif event == "covers":
+            self.app.reload_after_sync(info.get("name"), info)
+            self._status(f"{info.get('name')} hat abgeglichen (Cover: {info.get('covers', 0)} geändert).",
+                         running=False)
         self._render_peers()
         self.page.update()
 
@@ -273,4 +282,7 @@ class SyncDialog:
             self._status(f"Abgeglichen mit {result.get('name') or name}.\n"
                          f"Hier: {summary(result['received'])}. Dort: {summary(result['sent'])}.", running=False)
 
-        run_background(self.page, lambda: device_sync.sync_with(pid, ip), done)
+        def progress(text):
+            on_ui(self.page, self._status, text)
+
+        run_background(self.page, lambda: device_sync.sync_with(pid, ip, progress=progress), done)

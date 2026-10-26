@@ -517,19 +517,24 @@ class MangaApp(CoverActions, DataActions, LookupActions):
         open_dialog()
 
     def reload_after_sync(self, name, counts):
-        """Nach einem Abgleich: Datenbank neu laden (der Zwischenspeicher war
-        vorher gespeichert) und fehlende Cover suchen."""
-        if not any(counts.get(k) for k in ("created", "updated", "deleted")):
-            return
+        """Nach einem Abgleich (Einträge bzw. Cover): Datenbank neu laden -
+        der Zwischenspeicher war vorher gespeichert -, Cover neu einlesen und
+        noch fehlende suchen."""
+        import covers
         from ui.sync_dialog import summary
 
-        self.buffer.load(db.load_all())
-        self.selected_id = None
+        entries_changed = any(counts.get(k) for k in ("created", "updated", "deleted"))
+        if not entries_changed and not counts.get("covers"):
+            return
+        if entries_changed:
+            self.buffer.load(db.load_all())
+            self.selected_id = None
+        self.covers = covers.load_all()
+        self._images.clear()
         self.refresh()
         self._log(f"Geräte-Abgleich mit {name}: {summary(counts)}.")
-        if config.get_bool("cover_auto_lookup", True):
-            import covers
-
+        if "covers" in counts and config.get_bool("cover_auto_lookup", True):
+            # erst nach den Covern - sonst würde gesucht, was gleich übertragen wird
             self.start_cover_job(covers.pending(self.buffer.data, self.covers), startup=True)
 
     def open_calendar(self, year=None, month=None):

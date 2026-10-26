@@ -15,11 +15,12 @@ gespeicherten Stand, das empfangsbereite Gerät führt ihn ein
 (database.merge_sync, Regeln in sync_merge.py) und antwortet mit dem
 gemeinsamen Stand, den der Anfragende ebenfalls einführt.
 
-Abgeglichen wird nur die Datenbank (gespeicherte Einträge). Einstellungen
-(config.json), Cover-Dateien und das Postfach-Passwort bleiben auf dem
-jeweiligen Gerät; fehlende Cover sucht die Bibliothek nach dem Abgleich
-selbst. Kennung, Name und gekoppelte Geräte stehen in SETTINGS_FILE neben
-der Datenbank - bewusst nicht in der Datenbank, die per Google Drive auf
+Danach folgen die Cover: erst die Tabelle `covers` (Regeln in covers.py,
+"Geräte-Abgleich"), dann werden fehlende oder abweichende Bilddateien in
+beide Richtungen einzeln übertragen (Prüfsumme SHA-1). Einstellungen
+(config.json) und das Postfach-Passwort bleiben auf dem jeweiligen Gerät.
+Kennung, Name und gekoppelte Geräte stehen in SETTINGS_FILE neben der
+Datenbank - bewusst nicht in der Datenbank, die per Google Drive auf
 ein anderes Gerät wandern kann.
 """
 
@@ -39,6 +40,7 @@ from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 
+import covers
 import database as db
 from paths import base_dir, is_android
 
@@ -159,8 +161,9 @@ def _merge(state) -> dict:
 
 class Server:
     """Empfang für Kopplung und Abgleich. `on_change(event, info)` wird aus
-    einem Hintergrund-Thread aufgerufen: ("paired", {"name"}) bzw.
-    ("synced", {"name", "created", "updated", "deleted"})."""
+    einem Hintergrund-Thread aufgerufen: ("paired", {"name"}),
+    ("synced", {"name", "created", "updated", "deleted"}) nach den Einträgen
+    bzw. ("covers", {"name", "covers"}) nach den Covern."""
 
     def __init__(self, on_change: Callable = lambda event, info: None):
         self.on_change = on_change
@@ -169,6 +172,7 @@ class Server:
         self.code_until = 0.0
         self.code_attempts = 0
         self.lock = threading.Lock()
+        self.cover_sessions = {}   # {Geräte-ID: laufender Cover-Abgleich (gewünschte Dateien, Änderungen)}
 
     @property
     def running(self) -> bool:
@@ -223,9 +227,12 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
     def reply(self, code: int, data: dict, key: Optional[str] = None):
-        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.reply_bytes(code, json.dumps(data, ensure_ascii=False).encode("utf-8"), key)
+
+    def reply_bytes(self, code: int, body: bytes, key: Optional[str] = None,
+                    content_type: str = "application/json; charset=utf-8"):
         self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         if key:  # Antwort ebenfalls signieren, damit der Anfragende ihr trauen kann
             ts = str(int(time.time()))
@@ -251,13 +258,38 @@ class _Handler(BaseHTTPRequestHandler):
             body = self.read_body()
             if self.path == f"{PREFIX}/pair":
                 return self.pair(json.loads(body))
-            if self.path == f"{PREFIX}/sync":
-                return self.sync(body)
-            self.reply(404, {"error": "unbekannt"})
+            handler = {
+                f"{PREFIX}/sync": self.sync,
+                f"{PREFIX}/covers": self.covers_state,
+                f"{PREFIX}/cover-get": self.cover_get,
+                f"{PREFIX}/cover-put": self.cover_put,
+                f"{PREFIX}/covers-done": self.covers_done,
+            }.get(self.path)
+            if handler is None:
+                return self.reply(404, {"error": "unbekannt"})
+            peer = self.authorized(body)
+            if peer is not None:
+                handler(body, *peer)
         except (SyncError, ValueError) as exc:
             self.reply(400, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001 - dem anfragenden Gerät die Ursache melden
             self.reply(500, {"error": f"Unerwarteter Fehler: {exc}"})
+
+    def authorized(self, body: bytes) -> Optional[tuple]:
+        """(Geräte-ID, Gerät), wenn die Anfrage von einem gekoppelten Gerät
+        stammt und richtig signiert ist - sonst Antwort 403 und None."""
+        pid, ts, sig = (self.headers.get(h) or "" for h in ("X-Manga-Device", "X-Manga-Time", "X-Manga-Sig"))
+        peer = peers().get(pid)
+        if not peer:
+            self.reply(403, {"error": "Gerät ist nicht gekoppelt – bitte neu koppeln"})
+            return None
+        if not ts.isdigit() or abs(time.time() - int(ts)) > MAX_SKEW:
+            self.reply(403, {"error": "Uhrzeit der Geräte weicht zu stark ab"})
+            return None
+        if not hmac.compare_digest(sig, sign(peer["key"], ts, pid, body)):
+            self.reply(403, {"error": "Signatur ungültig – bitte neu koppeln"})
+            return None
+        return pid, peer
 
     def pair(self, data: dict):
         if not self.server_ref.check_code(data.get("code")):
@@ -270,21 +302,47 @@ class _Handler(BaseHTTPRequestHandler):
         self.server_ref.on_change("paired", {"name": name})
         self.reply(200, {"id": device_id(), "name": device_name(), "key": key})
 
-    def sync(self, body: bytes):
-        pid, ts, sig = (self.headers.get(h) or "" for h in ("X-Manga-Device", "X-Manga-Time", "X-Manga-Sig"))
-        peer = peers().get(pid)
-        if not peer:
-            return self.reply(403, {"error": "Gerät ist nicht gekoppelt – bitte neu koppeln"})
-        if not ts.isdigit() or abs(time.time() - int(ts)) > MAX_SKEW:
-            return self.reply(403, {"error": "Uhrzeit der Geräte weicht zu stark ab"})
-        if not hmac.compare_digest(sig, sign(peer["key"], ts, pid, body)):
-            return self.reply(403, {"error": "Signatur ungültig – bitte neu koppeln"})
+    def sync(self, body: bytes, pid: str, peer: dict):
         data = json.loads(body)
         counts = _merge(data.get("state"))
         name = str(data.get("name") or peer.get("name") or "Gerät")[:60]
         _save_peer(pid, name=name, ip=self.client_address[0], last_sync=db.now_stamp())
         self.server_ref.on_change("synced", {"name": name, **counts})
         self.reply(200, {"state": db.sync_state(), "result": counts, "name": device_name()}, key=peer["key"])
+
+    # Cover: erst die Einträge (Tabelle) zusammenführen, dann fehlende
+    # Bilddateien in beide Richtungen übertragen, zuletzt "fertig"
+
+    def covers_state(self, body: bytes, pid: str, peer: dict):
+        with _merge_lock:
+            merged, changed = covers.merge_sync(json.loads(body).get("covers") or [])
+        want = covers.wanted_files(merged)
+        self.server_ref.cover_sessions[pid] = {"want": want, "changed": set(changed), "merged": merged}
+        self.reply(200, {"covers": list(merged.values()), "have": covers.file_hashes(), "want": want},
+                   key=peer["key"])
+
+    def cover_get(self, body: bytes, _pid: str, peer: dict):
+        datei = json.loads(body).get("datei")
+        try:
+            data = covers.read_file(datei)
+        except OSError:
+            return self.reply(404, {"error": f"Bild {datei} fehlt"})
+        self.reply_bytes(200, data, peer["key"], "application/octet-stream")
+
+    def cover_put(self, body: bytes, pid: str, peer: dict):
+        session = self.server_ref.cover_sessions.get(pid) or {}
+        datei, sha = self.headers.get("X-Manga-File") or "", self.headers.get("X-Manga-Sha") or ""
+        if session.get("want", {}).get(datei) != sha:
+            return self.reply(400, {"error": f"Bild {datei} wurde nicht angefordert"})
+        covers.store_file(datei, body, sha)
+        session["changed"].update(t for t, rec in session["merged"].items() if rec["datei"] == datei)
+        self.reply(200, {"ok": True}, key=peer["key"])
+
+    def covers_done(self, _body: bytes, pid: str, peer: dict):
+        session = self.server_ref.cover_sessions.pop(pid, None) or {"changed": set()}
+        count = len(session["changed"])
+        self.server_ref.on_change("covers", {"name": peer.get("name") or "Gerät", "covers": count})
+        self.reply(200, {"covers": count}, key=peer["key"])
 
 
 # ------------------------------------------------- Anfragendes Gerät
@@ -364,27 +422,86 @@ def find_peer(pid: str) -> str:
     raise SyncError("Gerät nicht gefunden – ist dort „Geräte-Abgleich“ geöffnet und im selben WLAN?")
 
 
-def sync_with(pid: str, ip: Optional[str] = None, port: int = PORT) -> dict:
-    """Gleicht mit einem gekoppelten Gerät ab. Liefert {"received": Zähler
-    für dieses Gerät, "sent": Zähler des anderen, "name"}."""
+class _Connection:
+    """Signierte Anfragen an ein gekoppeltes Gerät; prüft auch die Signatur
+    der Antworten."""
+
+    def __init__(self, pid: str, peer: dict, ip: str, port: int):
+        self.pid, self.peer, self.ip, self.port = pid, peer, ip, port
+
+    def call(self, path: str, body: bytes, headers: Optional[dict] = None) -> bytes:
+        ts = str(int(time.time()))
+        headers = {"Content-Type": "application/json", "X-Manga-Device": device_id(), "X-Manga-Time": ts,
+                   "X-Manga-Sig": sign(self.peer["key"], ts, device_id(), body), **(headers or {})}
+        try:
+            status, rh, data = _request(self.ip, "POST", f"{PREFIX}/{path}", body, headers, timeout=120,
+                                        port=self.port)
+        except (OSError, http.client.HTTPException) as exc:
+            raise SyncError(f"Abgleich mit {self.peer.get('name')} fehlgeschlagen: {exc}") from exc
+        if status != 200:
+            try:
+                error = json.loads(data).get("error")
+            except (ValueError, AttributeError):
+                error = None
+            raise SyncError(error or f"Abgleich fehlgeschlagen ({status})")
+        rts = rh.get("X-Manga-Time", "")
+        if not hmac.compare_digest(rh.get("X-Manga-Sig", ""), sign(self.peer["key"], rts, self.pid, data)):
+            raise SyncError("Antwort des Geräts ist nicht korrekt signiert")
+        return data
+
+    def call_json(self, path: str, data: dict) -> dict:
+        reply = self.call(path, json.dumps(data, ensure_ascii=False).encode("utf-8"))
+        try:
+            return json.loads(reply)
+        except ValueError as exc:
+            raise SyncError(f"Unverständliche Antwort von {self.peer.get('name')}: {exc}") from exc
+
+
+def _sync_covers(con: _Connection, progress: Callable[[str], None]) -> tuple[int, int]:
+    """Cover abgleichen: Einträge zusammenführen, dann fehlende oder
+    abweichende Bilddateien in beide Richtungen übertragen. Gibt (hier
+    geänderte Cover, dort geänderte Cover) zurück."""
+    progress("Gleiche Cover ab …")
+    reply = con.call_json("covers", {"covers": covers.sync_state()})
+    with _merge_lock:
+        merged, changed = covers.merge_sync(reply.get("covers") or [])
+    changed = set(changed)
+    have = reply.get("have") if isinstance(reply.get("have"), dict) else {}
+    fetch = {d: sha for d, sha in covers.wanted_files(merged).items() if have.get(d) == sha}
+    want = reply.get("want") if isinstance(reply.get("want"), dict) else {}
+    send = {d: sha for d, sha in want.items() if covers.safe_file_name(d) and covers.file_hash(d) == sha}
+    total = len(fetch) + len(send)
+    done = 0
+    for datei, sha in fetch.items():
+        done += 1
+        progress(f"Lade Cover {done} von {total} …")
+        covers.store_file(datei, con.call("cover-get", json.dumps({"datei": datei}).encode()), sha)
+        changed.update(t for t, rec in merged.items() if rec["datei"] == datei)
+    for datei, sha in send.items():
+        done += 1
+        progress(f"Sende Cover {done} von {total} …")
+        con.call("cover-put", covers.read_file(datei),
+                 {"Content-Type": "application/octet-stream", "X-Manga-File": datei, "X-Manga-Sha": sha})
+    sent = con.call_json("covers-done", {}).get("covers") or 0
+    return len(changed), sent
+
+
+def sync_with(pid: str, ip: Optional[str] = None, port: int = PORT,
+              progress: Optional[Callable[[str], None]] = None) -> dict:
+    """Gleicht Einträge und Cover mit einem gekoppelten Gerät ab. Liefert
+    {"received": Zähler für dieses Gerät, "sent": Zähler des anderen,
+    "name"}; die Zähler wie database.merge_sync plus "covers".
+    `progress(text)` meldet den Fortschritt (aus diesem Thread)."""
+    progress = progress or (lambda _text: None)
     peer = peers().get(pid)
     if not peer:
         raise SyncError("Gerät ist nicht gekoppelt")
     ip = ip or find_peer(pid)
-    body = json.dumps({"name": device_name(), "state": db.sync_state()}, ensure_ascii=False).encode("utf-8")
-    ts = str(int(time.time()))
-    headers = {"Content-Type": "application/json", "X-Manga-Device": device_id(), "X-Manga-Time": ts,
-               "X-Manga-Sig": sign(peer["key"], ts, device_id(), body)}
-    try:
-        status, rh, data = _request(ip, "POST", f"{PREFIX}/sync", body, headers, timeout=120, port=port)
-        reply = json.loads(data)
-    except (OSError, ValueError, http.client.HTTPException) as exc:
-        raise SyncError(f"Abgleich mit {peer.get('name')} fehlgeschlagen: {exc}") from exc
-    if status != 200:
-        raise SyncError(reply.get("error") or f"Abgleich fehlgeschlagen ({status})")
-    rts = rh.get("X-Manga-Time", "")
-    if not hmac.compare_digest(rh.get("X-Manga-Sig", ""), sign(peer["key"], rts, pid, data)):
-        raise SyncError("Antwort des Geräts ist nicht korrekt signiert")
+    con = _Connection(pid, peer, ip, port)
+    progress(f"Gleiche Einträge mit {peer.get('name') or 'Gerät'} ab …")
+    reply = con.call_json("sync", {"name": device_name(), "state": db.sync_state()})
     counts = _merge(reply.get("state"))
     _save_peer(pid, name=reply.get("name") or peer.get("name"), ip=ip, last_sync=db.now_stamp())
-    return {"received": counts, "sent": reply.get("result") or {}, "name": reply.get("name")}
+    sent = dict(reply.get("result") or {})
+    counts["covers"], sent["covers"] = _sync_covers(con, progress)
+    return {"received": counts, "sent": sent, "name": reply.get("name")}

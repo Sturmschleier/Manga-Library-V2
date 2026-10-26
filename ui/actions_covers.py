@@ -53,9 +53,9 @@ class CoverActions:
         self._images.pop(info.titel, None)
         self._replace_tiles_of(info.titel)
 
-    def _search_one(self, titel, verlag, typ):
+    def _search_one(self, titel, verlag, typ, manuell=False):
         try:
-            info = covers.lookup_and_store(titel, verlag, typ)
+            info = covers.lookup_and_store(titel, verlag, typ, manuell=manuell)
         except Exception as exc:  # noqa: BLE001 - ein Fehler bei einem Titel darf die Suche nicht beenden
             changelog.log_error(f"Cover-Suche für „{titel}“ fehlgeschlagen: {exc}")
             return None
@@ -67,7 +67,8 @@ class CoverActions:
 
     def start_cover_job(self, entries, startup: bool = False) -> bool:
         """Sucht die Cover der `entries` nacheinander im Hintergrund. False,
-        wenn schon eine Suche läuft."""
+        wenn schon eine Suche läuft. Ohne `startup` von Hand angestoßen
+        ("Cover neu suchen") - zählt beim Geräte-Abgleich wie ein eigenes Bild."""
         if self._cover_cancel is not None:
             return False
         todo = list(entries)
@@ -82,7 +83,8 @@ class CoverActions:
                 if cancel.is_set() or self._closing:
                     break
                 on_ui(self.page, self._show_cover_status, f"Cover werden gesucht: {done} von {len(todo)} …", True)
-                info = self._search_one(entry.get("titel") or "", entry.get("verlag"), entry.get("typ"))
+                info = self._search_one(entry.get("titel") or "", entry.get("verlag"), entry.get("typ"),
+                                        manuell=not startup)
                 if info is not None and info.path:
                     found += 1
                 time.sleep(vlb_lookup.REQUEST_DELAY_SECONDS)   # Fair Use bei DNB und VLB
@@ -134,7 +136,7 @@ class CoverActions:
         self._toast(f"Suche Cover für „{titel}“ …")
 
         def run():
-            info = self._search_one(titel, entry.get("verlag"), entry.get("typ"))
+            info = self._search_one(titel, entry.get("verlag"), entry.get("typ"), manuell=True)
             if info is not None and info.path:
                 quelle = covers.SOURCE_LABELS.get(info.quelle, info.quelle)
                 isbn = f", ISBN {info.isbn}" if info.isbn else ""

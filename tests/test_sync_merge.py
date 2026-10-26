@@ -146,3 +146,81 @@ def test_init_db_fills_missing_uids(tmp_path, monkeypatch):
     db.init_db()
     (row,) = db.load_all()
     assert row["uid"] and row["geaendert"]
+
+
+# ------------------------------------------------------------------ Cover
+
+def cover(titel, quelle, geaendert, datei="", manuell=False, sha=""):
+    return {"titel": titel, "isbn": "", "datei": datei, "quelle": quelle, "geprueft_am": "2026-01-01",
+            "geaendert": geaendert, "manuell": manuell, "sha": sha}
+
+
+def test_cover_manual_choice_beats_newer_automatic_one():
+    import covers
+
+    pc = [cover("A", covers.QUELLE_EIGEN, "2025-01-01", "eigen_a.jpg", manuell=True, sha="1" * 40)]
+    handy = [cover("A", covers.QUELLE_DNB, "2026-10-01", "123.jpg", sha="2" * 40)]
+    merged, changed = covers.merge_states(handy, pc)
+    assert merged["A"]["datei"] == "eigen_a.jpg"
+    assert changed == ["A"]
+    assert covers.merge_states(pc, handy)[0]["A"]["datei"] == "eigen_a.jpg"
+
+
+def test_cover_result_beats_nothing_found_and_newer_wins_otherwise():
+    import covers
+
+    found = cover("A", covers.QUELLE_DNB, "2026-01-01", "1.jpg")
+    nothing = cover("A", covers.QUELLE_KEINE, "2026-05-01")
+    assert covers.merge_states([nothing], [found])[0]["A"]["quelle"] == covers.QUELLE_DNB
+    newer = cover("A", covers.QUELLE_VLB, "2026-06-01", "1.jpg")
+    assert covers.merge_states([found], [newer])[0]["A"]["quelle"] == covers.QUELLE_VLB
+
+
+def test_cover_same_entry_prefers_side_with_file():
+    import covers
+
+    with_file = cover("A", covers.QUELLE_DNB, "2026-01-01", "1.jpg", sha="a" * 40)
+    without = cover("A", covers.QUELLE_DNB, "2026-01-01", "1.jpg")
+    merged, changed = covers.merge_states([without], [with_file])
+    assert merged["A"]["sha"] == "a" * 40
+    assert changed == []   # der Eintrag selbst ist gleich - nur die Datei fehlt
+
+
+def test_cover_unsafe_file_names_are_rejected():
+    import covers
+
+    assert not covers.safe_file_name("../config.json")
+    assert not covers.safe_file_name("..\\x.jpg")
+    assert not covers.safe_file_name("x.exe")
+    assert covers.safe_file_name("eigen_0123abcd.png")
+    evil = cover("A", covers.QUELLE_EIGEN, "2030-01-01", "../evil.jpg", manuell=True)
+    assert covers.merge_states([], [evil]) == ({}, [])
+
+
+def test_cover_store_file_checks_hash(tmp_path, monkeypatch):
+    import hashlib
+
+    import covers
+
+    monkeypatch.setattr(covers, "COVER_DIR", tmp_path)
+    data = b"bild" * 500
+    with pytest.raises(ValueError):
+        covers.store_file("1.jpg", data, "0" * 40)
+    covers.store_file("1.jpg", data, hashlib.sha1(data).hexdigest())
+    assert covers.file_hashes() == {"1.jpg": hashlib.sha1(data).hexdigest()}
+    assert covers.wanted_files({"A": cover("A", covers.QUELLE_DNB, "x", "1.jpg", sha="f" * 40)}) == {"1.jpg": "f" * 40}
+
+
+def test_cover_table_gets_sync_columns_and_marks_manual(db_env):
+    import covers
+
+    with db.get_connection() as conn:
+        conn.execute("CREATE TABLE covers (titel TEXT PRIMARY KEY, isbn TEXT, datei TEXT, quelle TEXT, "
+                     "geprueft_am TEXT)")
+        conn.execute("INSERT INTO covers VALUES ('Eigen', '', 'e.jpg', 'eigen', '2025-01-01')")
+        conn.execute("INSERT INTO covers VALUES ('Auto', '1', '1.jpg', 'dnb', '2025-01-01')")
+    covers.ensure_table()
+    infos = covers.load_all()
+    assert infos["Eigen"].manuell and not infos["Auto"].manuell
+    saved = covers.save(covers.CoverInfo("Neu", quelle=covers.QUELLE_KEINE))
+    assert saved.geaendert
