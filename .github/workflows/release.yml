@@ -127,6 +127,8 @@ jobs:
         run: python build_apk.py
 
       - name: Ergebnis und Signatur prüfen
+        env:
+          MANGALIB_ANDROID_TOOLS: ${{ runner.temp }}/android-build
         run: |
           size=$(stat -c%s dist/MangaLibraryV2.apk)
           if [ "${size}" -lt 50000000 ]; then
@@ -135,8 +137,19 @@ jobs:
           fi
           expected=$(keytool -list -v -keystore "${FLET_ANDROID_SIGNING_KEY_STORE}" \
             -storepass "${FLET_ANDROID_SIGNING_KEY_STORE_PASSWORD}" -alias "${FLET_ANDROID_SIGNING_KEY_ALIAS}" \
-            | grep -m1 "SHA256:" | awk '{print $2}')
-          actual=$(keytool -printcert -jarfile dist/MangaLibraryV2.apk | grep -m1 "SHA256:" | awk '{print $2}')
+            | grep -m1 "SHA256:" | awk '{print $2}' | tr -d ':' | tr 'A-Z' 'a-z')
+          # keytool liest nur die alte JAR-Signatur; Android-APKs tragen v2/v3 -
+          # apksigner aus dem Android SDK, das Flet beim Build genutzt hat (eigener
+          # Download oder das auf dem GitHub-Rechner vorinstallierte)
+          apksigner=$(find "${MANGALIB_ANDROID_TOOLS}" "${ANDROID_HOME:-/nonexistent}" "${ANDROID_SDK_ROOT:-/nonexistent}" \
+            -path "*build-tools*" -name apksigner -type f 2>/dev/null | sort | tail -1)
+          echo "apksigner: ${apksigner}"
+          if [ -z "${apksigner}" ]; then
+            echo "::error::apksigner nicht gefunden"
+            exit 1
+          fi
+          actual=$("${apksigner}" verify --print-certs dist/MangaLibraryV2.apk \
+            | grep -m1 "certificate SHA-256 digest" | awk '{print $NF}')
           echo "Zertifikat der APK: ${actual}"
           if [ -z "${expected}" ] || [ "${expected}" != "${actual}" ]; then
             echo "::error::Die APK ist nicht mit dem hinterlegten Schlüssel signiert (erwartet ${expected})"
