@@ -123,6 +123,62 @@ dort anpassen und `python assets/make_icon.py` ausführen.
 (Arbeitsordner mit den echten Daten). Die Daten dort bleiben unberührt;
 eine laufende `MangaLibraryV2.exe` dort vorher beenden.
 
+## Android-App (APK) bauen
+
+```bash
+build_apk.bat
+```
+
+Baut `dist\MangaLibraryV2.apk` mit `flet build apk` in derselben Build-Umgebung
+`.venv-build` wie die exe. Voraussetzung ist der **Windows-Entwicklermodus**
+(Einstellungen → System → Für Entwickler). Beim ersten Lauf lädt Flet Flutter,
+JDK 17 und das Android SDK (mehrere GB) nach `E:\Claude\.android-build` – denselben
+Ordner wie die Anime-Liste, nicht nach C:. Ein anderer Ort: Umgebungsvariable
+`MANGALIB_ANDROID_TOOLS`.
+
+Gebaut wird aus dem Zwischenordner `.apk-src`, den `build_apk.py` nur mit dem
+Programmcode, dem Icon und `pyproject.toml` füllt – Datenbank, `config.json`,
+Cover und Google-Zugangsdaten landen also nicht in der APK. App-Name,
+Paketliste und Berechtigungen stehen in `pyproject.toml` (`[project]`,
+`[tool.flet]`), die Versionsnummer kommt aus `appinfo.VERSION`.
+
+Auf dem Handy:
+- eigene Datenbank im privaten App-Ordner; die Sammlung kommt per
+  **Geräte-Abgleich** (siehe unten) aufs Handy
+- kompakte Oberfläche: Symbolleiste mit Menü (☰), Suche, wischbare Filterzeile,
+  Statistik/Termine/Legende unter „Übersicht“, **langes Drücken** auf eine Kachel
+  statt Rechtsklick
+- beim Wechsel in den Hintergrund wird automatisch gespeichert
+- nicht verfügbar: Google Drive (Anmeldung braucht einen Browser auf demselben
+  Gerät), Postfach-Passwort speichern, LOG-Ordner öffnen
+
+Zum Ausprobieren der Handy-Oberfläche am PC: `set MANGALIB_MOBILE=1` vor
+`python main.py`.
+
+## Geräte-Abgleich (WLAN)
+
+Gleicht die Sammlung zwischen beliebigen Geräten im selben WLAN ab (PC, Handy,
+Tablet) – wie bei der Anime-Liste:
+
+1. Auf **beiden** Geräten „Geräte-Abgleich“ öffnen (PC: Werkzeugleiste oder
+   *Datei*; Handy: Sync-Symbol) – nur solange das Fenster offen ist, ist ein
+   Gerät empfangsbereit.
+2. Beim ersten Mal auf einem Gerät „Kopplungscode anzeigen“, auf dem anderen
+   „Im WLAN suchen“ → „Koppeln“ und den Code eingeben (oder die angezeigte
+   IP-Adresse unter „Verbinden“ eintragen).
+3. Danach genügt „Abgleichen“ beim gekoppelten Gerät.
+
+Abgeglichen wird der gespeicherte Stand (ungespeicherte Änderungen werden
+vorher gespeichert). Pro Eintrag gilt die zuletzt gespeicherte Fassung,
+Löschungen werden übertragen, Einträge mit gleichem Titel zusammengelegt. Vor
+jeder Änderung sichert die Bibliothek die Datenbank nach `BACKUP/…_vor-sync.db`.
+Einstellungen (`config.json`), eigene Cover und Passwörter bleiben auf dem
+Gerät; fehlende Cover werden nach dem Abgleich gesucht. Kopplungen stehen in
+`sync_geraete.json` neben der Datenbank. Nach dem Koppeln sind alle Anfragen
+signiert (HMAC), andere Geräte im WLAN werden abgewiesen. Am PC fragt die
+Windows-Firewall beim ersten Öffnen, ob der Zugriff im privaten Netzwerk erlaubt
+werden soll – das muss erlaubt werden (Port 47812).
+
 ## Neue Version veröffentlichen
 
 Die exe für ein Release baut **GitHub** (Workflow `.github/workflows/release.yml`)
@@ -156,7 +212,10 @@ exe steht dann als Artefakt am Durchlauf.
 - `library.py`, `logic.py`, `database.py`, `sorting.py`, `colors.py` … –
   Datenhaltung und Logik, aus Version 1 übernommen
 - `instance_lock.py` – verhindert ein zweites Programmfenster
-- `build.bat`, `build_exe.py`, `requirements-build.txt` – exe-Build; `assets/` – Programm-Icon; `.github/workflows/` – Tests und Release
+- `device_sync.py`, `sync_merge.py`, `ui/sync_dialog.py` – Geräte-Abgleich im WLAN
+  (Netzwerk, Zusammenführungsregeln, Fenster)
+- `build.bat`, `build_exe.py`, `requirements-build.txt` – exe-Build;
+  `build_apk.bat`, `build_apk.py` – Android-Build; `assets/` – Programm-Icon; `.github/workflows/` – Tests und Release
 
 ## Lizenz
 

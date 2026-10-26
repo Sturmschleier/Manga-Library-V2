@@ -21,9 +21,10 @@ from ui.theme import P
 
 
 class Sidebar:
-    def __init__(self, search_field: ft.TextField, on_open_month=None):
+    def __init__(self, search_field: ft.TextField, on_open_month=None, with_search: bool = True):
         """`on_open_month(offset)` öffnet den Kalender: 0 = aktueller Monat,
-        1 = nächster, 2 = übernächster."""
+        1 = nächster, 2 = übernächster. Ohne `with_search` (Handy) steht das
+        Suchfeld nicht in der Seitenleiste, sondern über den Kacheln."""
         self.search_field = search_field
 
         stats = [value_row(label) for label in
@@ -71,7 +72,7 @@ class Sidebar:
 
         self.control = ft.Column(
             [
-                ft.Row([ft.Text("Suche:", size=13), search_field], spacing=6),
+                *([ft.Row([ft.Text("Suche:", size=13), search_field], spacing=6)] if with_search else []),
                 section("Statistik", [row for row, _v in stats]),
                 section("Anzahl nach Verlag", [self.verlag_list]),
                 typ_box,

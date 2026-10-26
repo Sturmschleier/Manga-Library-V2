@@ -21,7 +21,15 @@ schreibt in die Datenbank, vorher wird sie nach BACKUP/ gesichert.
 
 Die Aktionen stehen thematisch getrennt in Mixins: ui/actions_data.py (CSV,
 Bestellungen, Google Drive), ui/actions_lookup.py (ISBN, VÖ-Termine,
-buchhandel.de), ui/actions_covers.py (Cover).
+buchhandel.de), ui/actions_covers.py (Cover). Der Geräte-Abgleich im WLAN
+hat ein eigenes Fenster (ui/sync_dialog.py).
+
+Auf dem Handy (Android-App, siehe build_apk.py) ist der Aufbau kompakter:
+eine Zeile mit Symbolknöpfen und einem Menü statt Menü- und
+Werkzeugleiste, die Filter in einer wischbaren Zeile, die Seitenleiste als
+„Übersicht“ zum Hochschieben, langes Drücken statt Rechtsklick. Weil Android
+eine App im Hintergrund jederzeit beenden kann, wird dort beim Wechsel in
+den Hintergrund automatisch gespeichert.
 """
 
 import inspect
@@ -42,12 +50,13 @@ from ui import APP_TITLE, theme
 from ui.actions_covers import CoverActions
 from ui.actions_data import DataActions
 from ui.actions_lookup import LookupActions
-from ui.common import alert, close_dialog, confirm, on_ui, open_path
+from ui.common import alert, ask, can_open_paths, close_dialog, confirm, is_mobile, on_ui, open_path
 from ui.sidebar import Sidebar
 from ui.theme import P
 from ui.tile import TILE_ASPECT, TILE_WIDTH, TileActions, build_tile
 
 MENU_WIDTH = 390   # Menüeinträge sonst so schmal wie die Menüleiste - Texte würden abgeschnitten
+MOBILE_MENU_WIDTH = 290
 SEARCH_DELAY_SECONDS = 0.2   # Suche erst nach kurzer Tipp-Pause auswerten
 COLOR_OPTIONS = (
     ("voe1", "VÖ +1 (Beendet/TBA/Gestoppt/NA)"),
@@ -76,6 +85,7 @@ def _handler(func):
 class MangaApp(CoverActions, DataActions, LookupActions):
     def __init__(self, page: ft.Page, on_closed=None):
         self.page = page
+        self.mobile = is_mobile(page)
         self.on_closed = on_closed   # wird aufgerufen, sobald das Fenster endgültig geschlossen wird
         self.config_problem = config.problem()   # beschädigte config.json -> Hinweis nach dem Start
         config.ensure_file_exists()
@@ -96,17 +106,22 @@ class MangaApp(CoverActions, DataActions, LookupActions):
         self.tile_actions = TileActions(
             select=self.select, edit=self.edit_entry, plus_baende=self.increment_baende,
             plus_gelesen=self.increment_gelesen, context_items=self._context_items,
+            long_press=self._show_context_sheet if self.mobile else None,
         )
 
         page.title = APP_TITLE
         theme.apply(page)
-        page.padding = 8
-        page.window.width = 1450
-        page.window.height = 900
-        page.window.min_width = 900
-        page.window.min_height = 560
-        page.window.prevent_close = True
-        page.window.on_event = self._on_window_event
+        if self.mobile:
+            page.padding = ft.Padding.symmetric(horizontal=6, vertical=4)
+            page.on_app_lifecycle_state_change = self._on_lifecycle
+        else:
+            page.padding = 8
+            page.window.width = 1450
+            page.window.height = 900
+            page.window.min_width = 900
+            page.window.min_height = 560
+            page.window.prevent_close = True
+            page.window.on_event = self._on_window_event
         page.on_keyboard_event = self._on_key
         page.on_resize = lambda _e: self._apply_sidebar_width()
         page.on_platform_brightness_change = self._on_brightness_change
@@ -140,6 +155,8 @@ class MangaApp(CoverActions, DataActions, LookupActions):
         )
         upload_btn = ft.OutlinedButton("Zu Google Drive sichern", icon=ft.Icons.CLOUD_UPLOAD,
                                        on_click=_handler(self.drive_upload))
+        sync_btn = ft.OutlinedButton("Geräte-Abgleich", icon=ft.Icons.SYNC, on_click=_handler(self.open_device_sync),
+                                     tooltip="Mit Handy, Tablet oder einem anderen PC im selben WLAN abgleichen")
         isbn_btn = ft.OutlinedButton("ISBN-Abgleich / Bestellliste", icon=ft.Icons.SEARCH,
                                      on_click=_handler(self.open_isbn_lookup))
         vlb_btn = ft.OutlinedButton(
@@ -167,16 +184,19 @@ class MangaApp(CoverActions, DataActions, LookupActions):
             tooltip="Veröffentlichungen eines Monats, nach Erscheinungstag (Strg+K)",
         )
 
-        toolbar = ft.Row(
-            [self.undo_btn, self.redo_btn, _separator(), self.save_btn, _separator(),
-             upload_btn, _separator(), isbn_btn, vlb_btn, calendar_btn],
-            spacing=6, wrap=True, vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        )
-        filters = ft.Row(
-            [self.verlag_filter, self.voe1_filter, self.order_filter, self.typ_filter, self.sort_choice,
-             self.sort_dir_btn, reset_btn],
-            spacing=8, wrap=True, vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        )
+        filter_controls = [self.verlag_filter, self.voe1_filter, self.order_filter, self.typ_filter,
+                           self.sort_choice, self.sort_dir_btn, reset_btn]
+        if self.mobile:
+            # Handy: eine wischbare Zeile statt umbrechender Reihen
+            filters = ft.Row(filter_controls, spacing=8, scroll=ft.ScrollMode.AUTO,
+                             vertical_alignment=ft.CrossAxisAlignment.CENTER)
+        else:
+            toolbar = ft.Row(
+                [self.undo_btn, self.redo_btn, _separator(), self.save_btn, _separator(),
+                 upload_btn, sync_btn, _separator(), isbn_btn, vlb_btn, calendar_btn],
+                spacing=6, wrap=True, vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
+            filters = ft.Row(filter_controls, spacing=8, wrap=True, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
         self.grid = ft.GridView(
             expand=True, max_extent=TILE_WIDTH, child_aspect_ratio=TILE_ASPECT, spacing=14, run_spacing=14,
@@ -184,21 +204,26 @@ class MangaApp(CoverActions, DataActions, LookupActions):
         )
         self.search_field = ft.TextField(dense=True, expand=True, prefix_icon=ft.Icons.SEARCH, bgcolor=P.surface,
                                          on_change=self._on_search_change)
-        self.sidebar = Sidebar(self.search_field, on_open_month=self._open_calendar_month)
+        self.sidebar = Sidebar(self.search_field, on_open_month=self._open_calendar_month,
+                               with_search=not self.mobile)
         self.sidebar_box = ft.Container(self.sidebar.control, width=300)
 
         self.status_text = ft.Text(size=12)
         self.cover_status = ft.Text(size=12, color=P.text_muted, visible=False)
         self.cover_cancel_btn = ft.TextButton("Abbrechen", visible=False, on_click=_handler(self.cancel_cover_job),
                                               style=ft.ButtonStyle(padding=4))
-        footer = ft.Row(
-            [self.status_text, self.cover_status, self.cover_cancel_btn,
-             ft.Container(self._build_legend(), expand=True, alignment=ft.Alignment.CENTER_RIGHT)],
-            spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        )
+        self.legend = self._build_legend()
 
         for line in self._log_lines:
             self.sidebar.log(line)
+        if self.mobile:
+            self._build_mobile(filters)
+            return
+        footer = ft.Row(
+            [self.status_text, self.cover_status, self.cover_cancel_btn,
+             ft.Container(self.legend, expand=True, alignment=ft.Alignment.CENTER_RIGHT)],
+            spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
         self.page.add(ft.Column(
             [
                 self.menubar,
@@ -212,6 +237,78 @@ class MangaApp(CoverActions, DataActions, LookupActions):
         ))
         self._apply_sidebar_width()
 
+    def _build_mobile(self, filters):
+        """Aufbau auf dem Handy: Symbolzeile mit Menü, Suche, wischbare
+        Filterzeile, Kacheln, Statuszeile. Seitenleiste und Farblegende
+        stehen in der „Übersicht“ (_show_overview)."""
+        def icon_btn(icon, tooltip, func, **kwargs):
+            return ft.IconButton(icon, tooltip=tooltip, on_click=_handler(func), **kwargs)
+
+        # Rückgängig/Wiederholen/Speichern als Symbole; _refresh_chrome
+        # schaltet sie wie die Knöpfe am PC
+        self.undo_btn = icon_btn(ft.Icons.UNDO, "Rückgängig", self.undo)
+        self.redo_btn = icon_btn(ft.Icons.REDO, "Wiederholen", self.redo)
+        self.save_btn = icon_btn(ft.Icons.SAVE, "Speichern", self.save, icon_color="#4CAF50")
+        top = ft.Row(
+            [
+                self.menubar,
+                ft.Container(expand=True),
+                self.undo_btn, self.redo_btn, self.save_btn,
+                icon_btn(ft.Icons.ADD, "Neuer Eintrag", self.add_entry),
+                icon_btn(ft.Icons.SYNC, "Geräte-Abgleich", self.open_device_sync),
+                icon_btn(ft.Icons.INSIGHTS, "Übersicht (Statistik, Termine, Legende)", self._show_overview),
+            ],
+            spacing=0, scroll=ft.ScrollMode.AUTO, vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+        self.grid.max_extent = TILE_WIDTH - 20
+        footer = ft.Row([self.status_text, self.cover_status, self.cover_cancel_btn], spacing=8, wrap=True)
+        self.page.add(ft.SafeArea(ft.Column(
+            [top, ft.Row([self.search_field]), filters, self.grid, footer],
+            expand=True, spacing=4,
+        ), expand=True))
+
+    def _show_overview(self):
+        """Handy: Seitenleiste (Statistik, Verlage, Typen, Termine, Live-Log)
+        und Farblegende als Blatt von unten."""
+        height = max(300, int((self.page.height or 700) * 0.8))
+        self.sidebar.control.expand = True   # scrollt im Blatt selbst
+        self.page.show_dialog(ft.BottomSheet(
+            ft.Container(
+                ft.Column([self.sidebar.control, ft.Divider(), self.legend], spacing=8, expand=True),
+                padding=12, height=height,
+            ),
+            show_drag_handle=True, scrollable=True,
+        ))
+
+    def _show_context_sheet(self, row_id):
+        """Handy: das Kontextmenü einer Kachel (langes Drücken) als Blatt von
+        unten - dieselben Einträge wie beim Rechtsklick am PC."""
+        entry = self.buffer.find(row_id)
+        if entry is None:
+            return
+        self.select(row_id)
+
+        def tile_for(item: ft.PopupMenuItem):
+            if item.content is None:
+                return ft.Divider(height=1)
+
+            async def click(e):
+                close_dialog(self.page)
+                result = item.on_click(e)
+                if inspect.isawaitable(result):
+                    await result
+
+            return ft.ListTile(leading=ft.Icon(item.icon), title=ft.Text(item.content), on_click=click, dense=True)
+
+        self.page.show_dialog(ft.BottomSheet(
+            ft.Container(ft.Column(
+                [ft.Text(entry.get("titel") or "(ohne Titel)", weight=ft.FontWeight.BOLD, size=16),
+                 *[tile_for(item) for item in self._context_items(row_id)]],
+                tight=True, spacing=0, scroll=ft.ScrollMode.AUTO,
+            ), padding=12),
+            show_drag_handle=True, scrollable=True,
+        ))
+
     def _dropdown(self, label, options, width):
         return ft.Dropdown(
             label=label, value=options[0], width=width, dense=True,
@@ -222,6 +319,8 @@ class MangaApp(CoverActions, DataActions, LookupActions):
     def _apply_sidebar_width(self):
         """Breite der Seitenleiste als Anteil der Fensterbreite
         (sidebar_width_fraction, wie in Version 1), mindestens 280 Pixel."""
+        if self.mobile:
+            return
         try:
             fraction = max(0.05, min(0.6, config.get_float("sidebar_width_fraction", 0.15)))
             width = self.page.width or self.page.window.width or 1400
@@ -232,15 +331,20 @@ class MangaApp(CoverActions, DataActions, LookupActions):
 
     # -------------------------------------------------------------- Menüs
 
+    @property
+    def _menu_width(self):
+        return MOBILE_MENU_WIDTH if self.mobile else MENU_WIDTH
+
     def _item(self, label, func, shortcut="", icon=None, tooltip=None):
         return ft.MenuItemButton(
             content=ft.Text(label), leading=ft.Icon(icon, size=18) if icon else ft.Container(width=18),
-            trailing=ft.Text(shortcut, size=12, color=P.text_muted) if shortcut else None,
-            on_click=_handler(func), tooltip=tooltip, width=MENU_WIDTH,
+            trailing=ft.Text(shortcut, size=12, color=P.text_muted) if shortcut and not self.mobile else None,
+            on_click=_handler(func), tooltip=None if self.mobile else tooltip, width=self._menu_width,
         )
 
     def _check_item(self, label, is_checked, toggle, tooltip=None):
-        item = ft.MenuItemButton(content=ft.Text(label), tooltip=tooltip, close_on_click=False, width=MENU_WIDTH)
+        item = ft.MenuItemButton(content=ft.Text(label), tooltip=None if self.mobile else tooltip,
+                                 close_on_click=False, width=self._menu_width)
 
         def sync():
             item.leading = ft.Icon(ft.Icons.CHECK_BOX if is_checked() else ft.Icons.CHECK_BOX_OUTLINE_BLANK,
@@ -283,16 +387,22 @@ class MangaApp(CoverActions, DataActions, LookupActions):
                        tooltip="Ruft Bestellbestätigungen per IMAP direkt aus dem Postfach ab (Zugang unter "
                                "Konfigurieren → Postfach). Es wird nichts im Postfach verändert."),
             ft.Divider(height=1),
-            self._item("Von Google Drive laden", self.drive_download, icon=ft.Icons.CLOUD_DOWNLOAD),
+            self._item("Geräte-Abgleich (WLAN) …", self.open_device_sync, icon=ft.Icons.SYNC,
+                       tooltip="Mit Handy, Tablet oder einem anderen PC im selben WLAN abgleichen"),
+            # Google-Anmeldung braucht einen Browser auf demselben Gerät - am Handy nicht
+            *([] if self.mobile else [
+                self._item("Von Google Drive laden", self.drive_download, icon=ft.Icons.CLOUD_DOWNLOAD)]),
+            *([self._item("ISBN-Abgleich / Bestellliste …", self.open_isbn_lookup, icon=ft.Icons.SEARCH)]
+              if self.mobile else []),
         ])
         colors_menu = ft.SubmenuButton(content=ft.Text("Farben"), leading=ft.Icon(ft.Icons.PALETTE, size=18),
-                                       width=MENU_WIDTH, controls=[
+                                       width=self._menu_width, controls=[
             self._check_item(label, lambda k=key: self.colors_enabled.get(k, True),
                              lambda checked, k=key: self._set_color(k, checked))
             for key, label in COLOR_OPTIONS
         ])
         theme_menu = ft.SubmenuButton(
-            content=ft.Text("Darstellung"), leading=ft.Icon(ft.Icons.CONTRAST, size=18), width=MENU_WIDTH,
+            content=ft.Text("Darstellung"), leading=ft.Icon(ft.Icons.CONTRAST, size=18), width=self._menu_width,
             controls=[self._check_item(label, lambda m=key: theme.mode() == m,
                                        lambda _checked, m=key: self.set_theme(m))
                       for key, label in theme.THEME_OPTIONS],
@@ -318,11 +428,18 @@ class MangaApp(CoverActions, DataActions, LookupActions):
             ),
         ])
         help_menu = ft.SubmenuButton(content=ft.Text("Hilfe"), controls=[
-            self._item("LOG-Ordner öffnen", self.open_log_folder, icon=ft.Icons.FOLDER_OPEN,
-                       tooltip="Änderungsprotokoll, Protokolle von ISBN-Abgleich und Bestellungen, fehler.log"),
-            ft.Divider(height=1),
+            *([self._item("LOG-Ordner öffnen", self.open_log_folder, icon=ft.Icons.FOLDER_OPEN,
+                          tooltip="Änderungsprotokoll, Protokolle von ISBN-Abgleich und Bestellungen, fehler.log"),
+               ft.Divider(height=1)] if can_open_paths() else []),
             self._item(f"Über {APP_TITLE} …", self.open_about, icon=ft.Icons.INFO_OUTLINE),
         ])
+        if self.mobile:
+            # Handy: alle Menüs hinter einem Knopf
+            for menu in (file_menu, config_menu, help_menu):
+                menu.width = self._menu_width
+            return ft.MenuBar(controls=[ft.SubmenuButton(content=ft.Icon(ft.Icons.MENU),
+                                                         controls=[file_menu, config_menu, help_menu])],
+                              style=ft.MenuStyle(bgcolor=P.surface, elevation=0))
         return ft.MenuBar(controls=[file_menu, config_menu, help_menu],
                           style=ft.MenuStyle(bgcolor=P.surface, elevation=0))
 
@@ -369,6 +486,38 @@ class MangaApp(CoverActions, DataActions, LookupActions):
         from ui.dialogs import open_about_dialog
 
         open_about_dialog(self.page, db.DB_FILE.parent)
+
+    def open_device_sync(self):
+        """Geräte-Abgleich im WLAN (ui/sync_dialog.py). Abgeglichen wird der
+        gespeicherte Stand - ungespeicherte Änderungen also vorher speichern."""
+        from ui.sync_dialog import SyncDialog
+
+        def open_dialog():
+            SyncDialog(self, mobile=self.mobile)
+
+        if self.buffer.dirty:
+            ask(self.page, "Ungespeicherte Änderungen",
+                "Abgeglichen wird der gespeicherte Stand. Jetzt speichern und fortfahren?",
+                [("Speichern und fortfahren", lambda: self.save() and open_dialog(), True),
+                 ("Abbrechen", None, False)])
+            return
+        open_dialog()
+
+    def reload_after_sync(self, name, counts):
+        """Nach einem Abgleich: Datenbank neu laden (der Zwischenspeicher war
+        vorher gespeichert) und fehlende Cover suchen."""
+        if not any(counts.get(k) for k in ("created", "updated", "deleted")):
+            return
+        from ui.sync_dialog import summary
+
+        self.buffer.load(db.load_all())
+        self.selected_id = None
+        self.refresh()
+        self._log(f"Geräte-Abgleich mit {name}: {summary(counts)}.")
+        if config.get_bool("cover_auto_lookup", True):
+            import covers
+
+            self.start_cover_job(covers.pending(self.buffer.data, self.covers), startup=True)
 
     def open_calendar(self, year=None, month=None):
         from ui.calendar_dialog import CalendarDialog
@@ -684,6 +833,12 @@ class MangaApp(CoverActions, DataActions, LookupActions):
             self.selected_id = None
             self._after_change()
             self._log("Wiederholt.")
+
+    def _on_lifecycle(self, e):
+        """Handy: beim Wechsel in den Hintergrund speichern - Android darf die
+        App dort jederzeit beenden, eine Rückfrage wie am PC gibt es nicht."""
+        if e.state in (ft.AppLifecycleState.HIDE, ft.AppLifecycleState.PAUSE) and self.buffer.dirty:
+            self.save()
 
     def save(self) -> bool:
         """Schreibt den kompletten Puffer in die Datenbank (vorher Sicherung

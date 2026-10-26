@@ -199,5 +199,5 @@ def test_migration_v3_turns_old_marks_into_next_band_number(tmp_path, monkeypatc
     marks = {e["titel"]: (e["bestellt"], e["angekommen"]) for e in db.load_all()}
     assert marks == {"Bestellt": ("12", ""), "Beides": ("5", "5"), "Ohne": ("", ""), "Keine Zahl": ("1", "")}
     conn = sqlite3.connect(db_file)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
     conn.close()
