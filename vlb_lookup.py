@@ -11,7 +11,8 @@ geraten.
 
 Ablauf je Serie:
   1. Suche nach dem Titel (nur Print, ab dem Vorjahr), Pause zwischen den
-     Anfragen (Fair Use, siehe REQUEST_DELAY_SECONDS)
+     Anfragen (Fair Use, siehe REQUEST_DELAY_SECONDS); passt nichts, noch
+     mit kurzem Titel bzw. Platzhalter (siehe retry_queries)
   2. Treffer eingrenzen: Verlag passt, Titel endet auf eine Bandnummer,
      keine Sonderausgabe, passender Titelstamm (siehe find_next_volumes)
   3. Die Bände owned+1 ... owned+3 den Spalten VÖ +1 ... VÖ +3 zuordnen
@@ -27,6 +28,7 @@ import random
 import re
 import threading
 import time
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -203,12 +205,16 @@ _TITLE_SPLIT_RE = re.compile(r"\s[–-]\s|:")
 _BAND_WORDS = {"band", "bd", "vol", "volume", "teil", "nr"}
 _SPECIAL_EXTRA = [re.compile(p) for p in (r"doppelband", r"jubil", r"collector", r"artbook", r"fanbook")]
 _QUERY_UNSAFE_RE = re.compile(r'[()"\\^*?]')
+_QUERY_OPERATORS = {"und", "oder", "nicht", "and", "or", "not"}
+# Zusätze in Klammern am Ende eines VLB-Titels: "… Band 02 (deutsche Ausgabe)", "… 13 (Manhua)"
+_TRAILING_NOTE_RE = re.compile(r"\s*[(\[][^()\[\]]*[)\]]\s*$")
 
 
 def normalize(text: str) -> str:
     """Kleingeschrieben, Apostroph entfernt, Satzzeichen zu Leerzeichen:
-    "Angels of Death: Episode. 0 06" -> "angels of death episode 0 06"."""
-    text = (text or "").casefold().replace("’", "").replace("'", "")
+    "Angels of Death: Episode. 0 06" -> "angels of death episode 0 06".
+    Zerlegte Umlaute (u + U+0308, z.B. aus macOS kopiert) werden zusammengesetzt."""
+    text = unicodedata.normalize("NFC", text or "").casefold().replace("’", "").replace("'", "")
     return " ".join(re.sub(r"[^\w]+", " ", text).replace("_", " ").split())
 
 
@@ -225,15 +231,21 @@ def _plain_ln(normalized: str) -> str:
     return " ".join(re.sub(r"\b(?:novels?|ln)$", " ", text).split())
 
 
-def search_query(entry: dict, today: Optional[datetime] = None) -> str:
+def search_query(entry: dict, today: Optional[datetime] = None, wildcard: bool = False) -> str:
     """Suchanfrage im Syntax der buchhandel.de-Suche. Bei Light Novels ohne
-    den Zusatz "Light Novel" - das VLB führt ihn oft nicht im Titel."""
-    titel = (entry.get("titel") or "").strip()
+    den Zusatz "Light Novel" - das VLB führt ihn oft nicht im Titel. Mit
+    `wildcard` steht am letzten Wort ein "*"."""
+    titel = unicodedata.normalize("NFC", entry.get("titel") or "").strip()
     if (entry.get("typ") or "").strip().lower() == "light novel":
         titel = _strip_light_novel(titel) or titel
-    titel = " ".join(_QUERY_UNSAFE_RE.sub(" ", titel).split())
+    # "nicht", "und", "oder" sind Operatoren der Suche: "Dahlia lässt den Kopf
+    # nicht hängen" würde sonst alles OHNE "hängen" liefern
+    words = [w for w in _QUERY_UNSAFE_RE.sub(" ", titel).split() if w.casefold() not in _QUERY_OPERATORS]
+    if wildcard and words:
+        # Das VLB zählt Satzzeichen am Wortende mit: "Slayer" findet "Goblin Slayer!" nicht, "Slayer*" schon
+        words[-1] = words[-1].rstrip("!?.,;:") + "*"
     year = (today or datetime.now()).year - SEARCH_LOOKBACK_YEARS
-    return f"(ti={titel}) und pt=pbook und ej={year}^*"
+    return f"(ti={' '.join(words)}) und pt=pbook und ej={year}^*"
 
 
 def fallback_query(entry: dict, today: Optional[datetime] = None) -> Optional[str]:
@@ -245,11 +257,29 @@ def fallback_query(entry: dict, today: Optional[datetime] = None) -> Optional[st
     return query if query != search_query(entry, today) and short["titel"] else None
 
 
+def retry_queries(entry: dict, today: Optional[datetime] = None) -> list[str]:
+    """Weitere Suchen, falls die erste nichts Passendes liefert: der kurze
+    Titel (siehe fallback_query), dann beide mit Platzhalter am letzten Wort
+    ("Goblin Slayer*" für "Goblin Slayer! 17")."""
+    short = dict(entry, titel=_TITLE_SPLIT_RE.split(entry.get("titel") or "")[0].strip())
+    candidates = [fallback_query(entry, today), search_query(entry, today, wildcard=True)]
+    if short["titel"]:
+        candidates.append(search_query(short, today, wildcard=True))
+    result = []
+    for query in candidates:
+        if query and query != search_query(entry, today) and query not in result:
+            result.append(query)
+    return result
+
+
 def _split_volume(title: str, ln: bool = False) -> Optional[tuple[str, int]]:
     """Zerlegt einen VLB-Titel in (Titelstamm, Bandnummer), wenn er auf eine
     Bandnummer endet - "Angels of Death: Episode. 0 06" -> ("angels of death
     episode 0", 6). Titel ohne Nummer am Ende (z.B. "… 12 + Box") -> None.
-    Bei Light Novels (`ln`) zählt auch "Doppelband 02" als Bandnummer."""
+    Bei Light Novels (`ln`) zählt auch "Doppelband 02" als Bandnummer.
+    Klammerzusätze am Ende ("… Band 02 (deutsche Ausgabe)") zählen nicht."""
+    while _TRAILING_NOTE_RE.search(title or ""):
+        title = _TRAILING_NOTE_RE.sub("", title)
     tokens = normalize(title).split()
     if ln:   # "… Doppelband 02 (Light Novel)": der Zusatz steht hinter der Nummer
         while tokens and tokens[-1] in ("light", "novel", "novels", "ln"):
@@ -330,25 +360,69 @@ def find_next_volumes(entry: dict, products: list[dict]) -> tuple[dict[int, Volu
     Anfang ("Arifureta" und "Arifureta … Zero"); dann gewinnt der Titelstamm,
     der genau dem Eintrag entspricht, sonst der, in dem der besessene Band
     vorkommt. Bleibt es mehrdeutig, wird nichts vorgeschlagen.
+
+    Passt so gar nichts, wird ein zweites Mal ohne Verlagsprüfung gesucht
+    (Imprints: "C Lines" erscheint bei Carlsen, "Pegasus Manga" bei Kazé)
+    und bei Light Novels auch ohne "Light Novel" im Titel ("Goblin Slayer!
+    17"), sofern keiner der Treffer eine Light Novel ist. Dann zählt nur ein
+    Titelstamm, in dem der besessene Band vorkommt - das bestätigt die Serie.
     """
+    groups = _volume_groups(entry, products, strict=True)
+    if not groups:
+        groups = _volume_groups(entry, products, strict=False)
+        owned = owned_volumes(entry) or 0
+        holding = [stem for stem, volumes in groups.items() if owned in volumes] if owned else []
+        if len(holding) == 1:
+            return groups[holding[0]], ""
+        return {}, "keine passenden Treffer"
+
     titel = entry.get("titel") or ""
-    is_ln = (entry.get("typ") or "").strip().lower() == "light novel"
+    is_ln = _is_light_novel(entry)
+    exact_names = _exact_names(titel, is_ln)
+    owned = owned_volumes(entry) or 0
+    exact = [stem for stem in groups if stem in exact_names]
+    if len(exact) == 1:
+        return groups[exact[0]], ""
+    holding = [stem for stem, volumes in groups.items() if owned in volumes] if owned else []
+    if len(holding) == 1:
+        return groups[holding[0]], ""
+    if len(groups) == 1 and not owned:
+        return next(iter(groups.values())), ""
+    return {}, "mehrdeutig (Treffer: " + "; ".join(sorted(groups)[:3]) + ")"
+
+
+def _is_light_novel(entry: dict) -> bool:
+    """Light Novel laut Typ - oder laut Titel ("… – Light Novel"), auch wenn der Typ anders lautet."""
+    typ = (entry.get("typ") or "").strip().lower()
+    return typ == "light novel" or bool(re.search(r"light[\s-]*novel", entry.get("titel") or "", re.IGNORECASE))
+
+
+def _exact_names(titel: str, is_ln: bool) -> set[str]:
     series = _plain_ln(normalize(titel)) if is_ln else normalize(titel)
     # Das VLB lässt einen Untertitel oft weg: "A Wild Last Boss Appeared! 05"
     # für "A Wild Last Boss Appeared! – Der schwarzgeflügelte Overlord"
     short = normalize(_TITLE_SPLIT_RE.split(titel)[0])
-    exact_names = {series, _plain_ln(short) if is_ln else short} - {""}
-    owned = owned_volumes(entry) or 0
+    return {series, _plain_ln(short) if is_ln else short} - {""}
+
+
+def _volume_groups(entry: dict, products: list[dict], strict: bool) -> dict[str, dict[int, Volume]]:
+    """Die zur Serie passenden Treffer, nach Titelstamm gruppiert:
+    {Titelstamm: {Bandnummer: Volume}}. `strict=False` siehe find_next_volumes."""
+    titel = entry.get("titel") or ""
+    is_ln = _is_light_novel(entry)
+    series = _plain_ln(normalize(titel)) if is_ln else normalize(titel)
+    exact_names = _exact_names(titel, is_ln)
 
     typ = (entry.get("typ") or "").strip().lower()
     products = [
         p for p in products
-        if (p.get("productType") or "pbook") == "pbook" and _publisher_ok(p, entry.get("verlag"))
+        if (p.get("productType") or "pbook") == "pbook" and (not strict or _publisher_ok(p, entry.get("verlag")))
     ]
     if is_ln:
         # Nur Treffer, die erkennbar Light Novels sind - sonst würde die
         # Manga-Ausgabe derselben Reihe untergemischt
-        products = [p for p in products if _looks_like_light_novel(p)]
+        if strict or any(_looks_like_light_novel(p) for p in products):
+            products = [p for p in products if _looks_like_light_novel(p)]
     elif typ in ("manga", "manhwa"):
         products = [p for p in products if not _has_light_novel(p)]
 
@@ -371,18 +445,7 @@ def find_next_volumes(entry: dict, products: list[dict]) -> tuple[dict[int, Volu
         # Mehrere Ausgaben desselben Bandes: die mit dem früheren Datum nehmen
         if known is None or _date_key(volume.date) < _date_key(known.date):
             groups[stem_plain][band] = volume
-
-    if not groups:
-        return {}, "keine passenden Treffer"
-    exact = [stem for stem in groups if stem in exact_names]
-    if len(exact) == 1:
-        return groups[exact[0]], ""
-    holding = [stem for stem, volumes in groups.items() if owned in volumes] if owned else []
-    if len(holding) == 1:
-        return groups[holding[0]], ""
-    if len(groups) == 1 and not owned:
-        return next(iter(groups.values())), ""
-    return {}, "mehrdeutig (Treffer: " + "; ".join(sorted(groups)[:3]) + ")"
+    return groups
 
 
 def _date_key(date: VlbDate) -> tuple[int, int, int]:
@@ -530,11 +593,15 @@ def check_entries(
         if progress:
             progress(index, len(todo), entry.get("titel") or "")
         try:
-            products = fetch(search_query(entry))
-            alternative = None if products else fallback_query(entry)
-            if alternative:
+            result = plan_entry(entry, fetch(search_query(entry)))
+            # Nichts Passendes: kürzer bzw. mit Platzhalter weitersuchen (siehe retry_queries)
+            for alternative in retry_queries(entry):
+                if result.status != "unklar" or result.note.startswith("mehrdeutig"):
+                    break
+                if cancel is not None and cancel.is_set():
+                    break
                 sleep(delay + random.uniform(0, jitter))
-                products = fetch(alternative)
+                result = plan_entry(entry, fetch(alternative))
         except VlbError as exc:
             errors += 1
             results.append(SeriesResult(entry.get("id"), entry.get("titel") or "", "fehler", str(exc)))
@@ -543,7 +610,7 @@ def check_entries(
                 break
         else:
             errors = 0
-            results.append(plan_entry(entry, products))
+            results.append(result)
         if index < len(todo) - 1:
             sleep(delay + random.uniform(0, jitter))
     return results, cancelled
