@@ -33,6 +33,7 @@ DEFAULTS = {
     # Protokolle (LOG-Ordner, siehe changelog.py)
     "isbn_log_keep": 10,        # so viele ISBN-Abgleich-Logdateien bleiben liegen (die ältesten werden gelöscht)
     "order_log_keep": 10,       # so viele Logdateien "Bestellung einlesen" bleiben liegen (älteste werden gelöscht)
+    "vlb_log_keep": 10,         # so viele Logdateien "VÖ-Termine holen" bleiben liegen (älteste werden gelöscht)
     "log_retention_days": 182,  # Änderungsprotokoll: Einträge älter als N Tage wandern ins Archiv
     # Datenbank-Sicherungen (BACKUP-Ordner, siehe database.create_backup): vor
     # jedem Speichern und vor einem Google-Drive-Download

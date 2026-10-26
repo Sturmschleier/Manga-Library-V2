@@ -467,3 +467,20 @@ def test_explicit_single_title_ignores_skip_rule_but_not_unusable_entries():
     broken = entry("Serie", "viele", id=2)
     results, _ = vlb.check_entries([broken], respect_skip=False, fetch=fetch, sleep=lambda s: None)
     assert len(queries) == 2 and results[0].status == "uebersprungen"   # keine dritte Abfrage
+
+
+def test_build_log_lists_every_series_with_queries_and_finds():
+    found = [product("Serie 3", "01.03.2027", isbn="111"), product("Verworfen 3", "01.04.2027")]
+    fetch = lambda q: found if "Anders" not in q else []   # noqa: E731
+    entries = [entry("Serie", 2, id=1), entry("Anders", 1, id=2), entry("Fertig", 1, id=3, komplett="Ja"),
+               entry("Verworfen", 2, id=4)]   # "neu", aber nicht eingetragen (Feld inzwischen geändert)
+    results, _ = vlb.check_entries(entries, fetch=fetch, sleep=lambda s: None)
+    by_id = {r.entry_id: r for r in results}
+    assert by_id[1].queries and by_id[2].queries
+    text = "\n".join(vlb.build_log(results, False, [by_id[1]], labels={"voe_1": "VÖ +1"}))
+    assert "Serien abgefragt:         3" in text and "Neue Termine eingetragen: 1" in text
+    assert "  Serie: VÖ +1: (leer) -> 01.03.2027" in text
+    assert "Gefunden: Band 3 | 01.03.2027 | ISBN 111 | Serie 3" in text
+    assert "Suche: (ti=Anders)" in text and "Hinweis: keine passenden Treffer" in text
+    assert "  Fertig: Komplett" in text
+    assert "Verworfen: NICHT eingetragen" in text
