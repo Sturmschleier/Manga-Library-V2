@@ -5,6 +5,7 @@ echten Antworten von buchhandel.de nachempfunden (Stand Oktober 2026).
 """
 
 import threading
+from datetime import datetime
 
 import pytest
 
@@ -272,6 +273,83 @@ def test_fallback_query_only_for_titles_with_subtitle():
     assert vlb.fallback_query(entry("Re:Zero", 5)) is not None
 
 
+def test_search_query_drops_operator_words():
+    # "nicht" ist ein Operator der Suche - sonst kommt alles OHNE "hängen"
+    q = vlb.search_query(entry("Dahlia lässt den Kopf nicht hängen", 8), today=datetime(2026, 10, 26))
+    assert q == "(ti=Dahlia lässt den Kopf hängen) und pt=pbook und ej=2025^*"
+
+
+def test_retry_queries_short_title_then_wildcard():
+    e = entry("Herr Lehrer, wir werden die Welt zerstören", 8)
+    assert vlb.retry_queries(e, today=datetime(2026, 1, 1)) == [
+        "(ti=Herr Lehrer, wir werden die Welt zerstören*) und pt=pbook und ej=2025^*"]
+    long = vlb.retry_queries(entry("A Wild Last Boss Appeared! – Der Overlord", 5), today=datetime(2026, 1, 1))
+    assert [q.split(")")[0] for q in long] == [
+        "(ti=A Wild Last Boss Appeared!",
+        "(ti=A Wild Last Boss Appeared! – Der Overlord*",
+        "(ti=A Wild Last Boss Appeared*",
+    ]
+
+
+def test_trailing_notes_in_brackets_are_ignored():
+    products = [
+        product("Reincarnated as a Sword: Another Wish – Band 04 (deutsche Ausgabe)", "29.12.2026", publisher="Dokico"),
+        product("Reincarnated as a Sword: Another Wish – Band 03 (deutsche Ausgabe)", "24.11.2026", publisher="Dokico"),
+    ]
+    result = vlb.plan_entry(entry("Reincarnated as a Sword: Another Wish", 2, verlag="Dokico"), products)
+    assert result.changes == {"voe_1": "24.11.2026", "voe_2": "29.12.2026"}
+    manhua = [product("The Grandmaster of Demonic Cultivation – Mo Dao Zu Shi 13 + Box (Manhua)", "11.11.2026"),
+              product("The Grandmaster of Demonic Cultivation – Mo Dao Zu Shi 13 (Manhua)", "11.11.2026"),
+              product("The Grandmaster of Demonic Cultivation – Mo Dao Zu Shi 12 (Manhua)", "12.08.2026")]
+    result = vlb.plan_entry(entry("The Grandmaster of Demonic Cultivation", 12, typ="Manhwa"), manhua)
+    assert result.changes == {"voe_1": "11.11.2026"}
+
+
+def test_other_publisher_name_counts_when_owned_volume_confirms_series():
+    # "C Lines" erscheint im VLB als Carlsen
+    products = [product("The World After the Fall 13", "29.09.2026", publisher="Carlsen"),
+                product("The World After the Fall 12", "28.04.2026", publisher="Carlsen")]
+    result = vlb.plan_entry(entry("The World After the Fall", 12, verlag="C Lines", typ="Manhwa"), products)
+    assert result.changes == {"voe_1": "29.09.2026"}
+    # ohne den besessenen Band unter den Treffern bleibt es offen
+    result = vlb.plan_entry(entry("The World After the Fall", 11, verlag="C Lines", typ="Manhwa"), products[:1])
+    assert result.status == "unklar"
+
+
+def test_light_novel_without_marker_when_no_hit_is_a_light_novel():
+    products = [product("Goblin Slayer! 17", "15.06.2026", publisher="Altraverse GmbH"),
+                product("Goblin Slayer! 16", "15.09.2025", publisher="Altraverse GmbH"),
+                product("Goblin Slayer! Year One 14", "10.08.2026", publisher="Altraverse GmbH")]
+    result = vlb.plan_entry(entry("Goblin Slayer LN", 16, typ="Light Novel", verlag="Altraverse"), products)
+    assert [v.band for v in result.volumes] == [17]
+
+
+def test_decomposed_umlauts_in_own_title_still_match():
+    titel = "Meine Schülerinnen"   # "ü" als u + kombinierendes Trema
+    products = [product("Meine Schülerinnen 08", "08.10.2026", publisher="Loewe")]
+    result = vlb.plan_entry(entry(titel, 7, verlag="Loewe Manga"), products)
+    assert result.changes == {"voe_1": "08.10.2026"}
+    assert "Schülerinnen" in vlb.search_query(entry(titel))
+
+
+def test_light_novel_in_title_counts_even_with_other_type():
+    products = [product("The Rising of the Shield Hero Light Novel 19", "11.11.2026"),
+                product("The Rising of the Shield Hero Light Novel 18", "08.07.2026")]
+    result = vlb.plan_entry(entry("The Rising of the Shield Hero – Light Novel", 18, voe_1="TBA"), products)
+    assert result.changes == {"voe_1": "11.11.2026"}
+
+
+def test_check_entries_retries_with_wildcard_when_nothing_matches():
+    queries = []
+
+    def fetch(query):
+        queries.append(query)
+        return [product("Goblin Slayer! 17", "15.06.2026")] if "Slayer*" in query else []
+
+    results, _ = vlb.check_entries([entry("Goblin Slayer", 16)], fetch=fetch, sleep=lambda s: None)
+    assert len(queries) == 2 and results[0].changes == {"voe_1": "15.06.2026"}
+
+
 def test_no_hits():
     result = vlb.plan_entry(entry("Unbekannt", 2), [])
     assert result.status == "unklar" and result.changes == {}
@@ -366,7 +444,7 @@ def test_check_entries_single_error_does_not_abort():
     answers = [vlb.VlbError("kurz weg"), ANGELS_EPISODE, ANGELS_EPISODE]
 
     def fetch(query):
-        answer = answers.pop(0)
+        answer = answers.pop(0) if answers else []   # weitere Suchen (retry_queries) finden nichts
         if isinstance(answer, Exception):
             raise answer
         return answer
@@ -450,7 +528,7 @@ def test_check_entries_only_queries_selected_scope():
     results, _ = vlb.check_entries(
         entries, scope=vlb.SCOPE_TBA, fetch=lambda q: queries.append(q) or [], sleep=lambda s: None
     )
-    assert len(queries) == 1 and "Ohne" in queries[0]
+    assert queries and all("Ohne" in q for q in queries)
     assert {r.entry_id: r.status for r in results} == {2: "unklar", 3: "uebersprungen"}   # "Mit Datum" fehlt ganz
 
 
