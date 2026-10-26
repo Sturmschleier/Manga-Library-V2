@@ -23,9 +23,16 @@ from typing import Optional
 
 import flet as ft
 
+from paths import is_android
 from ui.theme import P
 
 MONO = "Consolas"
+
+
+def is_mobile(page: ft.Page) -> bool:
+    """Handy/Tablet (Android-App): Bedienung per Finger, kein Fenster, keine
+    Maus. MANGALIB_MOBILE=1 erzwingt die Handy-Oberfläche am PC (zum Testen)."""
+    return os.environ.get("MANGALIB_MOBILE") == "1" or (page.platform is not None and page.platform.is_mobile())
 
 
 def on_ui(page: ft.Page, func: Callable, *args) -> None:
@@ -180,14 +187,26 @@ def run_background(page: ft.Page, func: Callable, on_done: Callable) -> None:
     page.run_thread(worker)
 
 
-def open_url(url: str) -> bool:
+def open_url(url: str, page: Optional[ft.Page] = None) -> bool:
     """Öffnet `url` im Standardbrowser und kehrt sofort zurück.
+
+    In der Android-App über Flets UrlLauncher (braucht `page`) - dort gibt
+    es weder Prozesse noch webbrowser.
 
     Unter Windows über einen eigenen kleinen Prozess (url.dll) statt
     webbrowser.open: Das ruft ShellExecute im aktuellen Thread auf, und Flet
     führt Klicks in einem Hintergrund-Thread ohne Nachrichtenschleife aus -
     dort kann ShellExecute mit einem URL mehrere Sekunden hängen, bevor der
     Browser überhaupt startet."""
+    if is_android():
+        if page is None:
+            return False
+
+        async def launch():
+            await ft.UrlLauncher().launch_url(url, mode=ft.LaunchMode.EXTERNAL_APPLICATION)
+
+        page.run_task(launch)
+        return True
     if sys.platform == "win32":
         try:
             subprocess.Popen(["rundll32", "url.dll,FileProtocolHandler", url],
@@ -201,8 +220,15 @@ def open_url(url: str) -> bool:
         return False
 
 
+def can_open_paths() -> bool:
+    """Lassen sich Ordner im Dateimanager öffnen? (In der Android-App nicht.)"""
+    return hasattr(os, "startfile")
+
+
 def open_path(path) -> None:
     """Ordner oder Datei mit dem zugehörigen Windows-Programm öffnen."""
+    if not can_open_paths():
+        raise OSError("Auf diesem Gerät lassen sich keine Ordner öffnen.")
     os.startfile(str(path))
 
 

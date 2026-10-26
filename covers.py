@@ -26,9 +26,19 @@ vergeben werden (siehe isbn_lookup.ensure_isbn_cache_table). Die Tabelle
 ist ein Zwischenspeicher neben den eigentlichen Daten: Sie wird sofort
 geschrieben, nicht erst beim "Speichern", und gehört nicht zu
 Rückgängig/Wiederholen.
+
+Geräte-Abgleich (device_sync.py): Die Tabelle und die Bilddateien werden
+mit abgeglichen. Pro Titel gilt (merge_states):
+  1. von Hand Entschiedenes (eigenes Bild, entfernt, "Cover erneut suchen" /
+     "Cover neu suchen") vor automatisch Gefundenem - sonst verdrängte ein
+     auf dem Handy frisch gefundenes Cover ein älteres eigenes Bild vom PC,
+  2. ein Ergebnis (Bild, entfernt) vor "nichts gefunden",
+  3. dann die zuletzt geänderte Fassung (`geaendert`).
+Bilddateien werden nur übertragen, wenn ihr Inhalt (SHA-1) abweicht.
 """
 
 import hashlib
+import os
 import re
 import shutil
 import time
@@ -86,6 +96,8 @@ class CoverInfo:
     datei: str = ""         # Dateiname in COVER_DIR, leer = kein Bild
     quelle: str = QUELLE_KEINE
     geprueft_am: str = ""   # ISO-Datum der letzten Suche/Änderung
+    geaendert: str = ""     # Zeitpunkt der letzten Änderung (UTC, database.now_stamp) - für den Abgleich
+    manuell: bool = False   # von Hand entschieden (eigenes Bild, entfernt, gezielt gesucht)
 
     @property
     def path(self) -> Optional[Path]:
@@ -105,6 +117,10 @@ def _connect():
         yield conn
 
 
+COLUMNS = ("titel", "isbn", "datei", "quelle", "geprueft_am", "geaendert", "manuell")
+MANUAL_SOURCES = (QUELLE_EIGEN, QUELLE_ENTFERNT)
+
+
 def ensure_table() -> None:
     with _connect() as conn:
         conn.execute(
@@ -118,22 +134,40 @@ def ensure_table() -> None:
             )
             """
         )
+        # für den Geräte-Abgleich ergänzt; eigene und entfernte Cover waren
+        # schon immer von Hand entschieden
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(covers)").fetchall()}
+        if "geaendert" not in existing:
+            conn.execute("ALTER TABLE covers ADD COLUMN geaendert TEXT")
+        if "manuell" not in existing:
+            conn.execute("ALTER TABLE covers ADD COLUMN manuell INTEGER")
+            conn.execute("UPDATE covers SET manuell = 1 WHERE quelle IN (?, ?)", MANUAL_SOURCES)
+
+
+def _info(row) -> CoverInfo:
+    return CoverInfo(row["titel"], row["isbn"] or "", row["datei"] or "", row["quelle"] or "",
+                     row["geprueft_am"] or "", row["geaendert"] or "", bool(row["manuell"]))
 
 
 def load_all() -> dict:
     """Alle bekannten Cover als {titel: CoverInfo}."""
     with _connect() as conn:
-        rows = conn.execute("SELECT titel, isbn, datei, quelle, geprueft_am FROM covers").fetchall()
-    return {r["titel"]: CoverInfo(r["titel"], r["isbn"] or "", r["datei"] or "", r["quelle"] or "",
-                                  r["geprueft_am"] or "") for r in rows}
+        rows = conn.execute(f"SELECT {', '.join(COLUMNS)} FROM covers").fetchall()
+    return {r["titel"]: _info(r) for r in rows}
+
+
+def _write(conn, info: CoverInfo) -> None:
+    conn.execute(
+        f"INSERT OR REPLACE INTO covers ({', '.join(COLUMNS)}) VALUES ({', '.join('?' for _ in COLUMNS)})",
+        (info.titel, info.isbn, info.datei, info.quelle, info.geprueft_am, info.geaendert, int(info.manuell)),
+    )
 
 
 def save(info: CoverInfo) -> CoverInfo:
+    """Speichert `info` mit der aktuellen Änderungszeit."""
+    info.geaendert = db.now_stamp()
     with _connect() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO covers (titel, isbn, datei, quelle, geprueft_am) VALUES (?, ?, ?, ?, ?)",
-            (info.titel, info.isbn, info.datei, info.quelle, info.geprueft_am),
-        )
+        _write(conn, info)
     return info
 
 
@@ -410,12 +444,14 @@ def _store_image(info: CoverInfo, isbn: str, image: bytes, quelle: str) -> None:
 
 
 def lookup_and_store(titel: str, verlag: Optional[str] = None, typ: Optional[str] = None,
-                     log: Optional[list] = None, use_vlb: bool = True) -> CoverInfo:
+                     log: Optional[list] = None, use_vlb: bool = True, manuell: bool = False) -> CoverInfo:
     """Sucht ISBN und Cover von Band 1 und merkt sich das Ergebnis - auch
     ein erfolgloses, damit nicht bei jedem Start erneut gesucht wird.
-    Reihenfolge siehe Moduldoku; `use_vlb=False` lässt das VLB aus."""
+    Reihenfolge siehe Moduldoku; `use_vlb=False` lässt das VLB aus.
+    `manuell`: von Hand angestoßen (zählt beim Geräte-Abgleich wie ein
+    eigenes Bild, siehe Moduldoku)."""
     isbn = find_band1_isbn(titel, verlag, typ, log) or ""
-    info = CoverInfo(titel, isbn=isbn, quelle=QUELLE_KEINE, geprueft_am=_today())
+    info = CoverInfo(titel, isbn=isbn, quelle=QUELLE_KEINE, geprueft_am=_today(), manuell=manuell)
     image = download_cover(isbn) if isbn else None
     if image:
         _store_image(info, isbn, image, QUELLE_DNB)
@@ -471,11 +507,134 @@ def set_custom(titel: str, source: Path) -> CoverInfo:
     for old in COVER_DIR.glob(f"{Path(name).stem}.*"):
         old.unlink()   # ein früher gewähltes Bild mit anderer Endung
     shutil.copyfile(source, COVER_DIR / name)
-    return save(CoverInfo(titel, datei=name, quelle=QUELLE_EIGEN, geprueft_am=_today()))
+    return save(CoverInfo(titel, datei=name, quelle=QUELLE_EIGEN, geprueft_am=_today(), manuell=True))
 
 
 def remove(titel: str) -> CoverInfo:
     """Kein Cover mehr anzeigen und auch nicht wieder automatisch suchen.
     Die Bilddatei bleibt liegen (eine DNB-Datei kann ein anderer Titel mit
     derselben ISBN nutzen)."""
-    return save(CoverInfo(titel, quelle=QUELLE_ENTFERNT, geprueft_am=_today()))
+    return save(CoverInfo(titel, quelle=QUELLE_ENTFERNT, geprueft_am=_today(), manuell=True))
+
+
+# ------------------------------------------------------- Geräte-Abgleich
+
+# Dateinamen, die beim Abgleich angenommen werden: nur ein Name (kein Pfad)
+# mit Bild-Endung - wie ihn _store_image, lookup_and_store und set_custom anlegen
+_SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
+
+
+def safe_file_name(name) -> bool:
+    return (isinstance(name, str) and bool(_SAFE_NAME_RE.match(name)) and not name.startswith(".")
+            and name.rsplit(".", 1)[-1].lower() in IMAGE_EXTENSIONS)
+
+
+def file_hash(datei: str) -> str:
+    """SHA-1 der Bilddatei in COVER_DIR, leer wenn es sie nicht gibt."""
+    if not safe_file_name(datei):
+        return ""
+    try:
+        return hashlib.sha1((COVER_DIR / datei).read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def file_hashes() -> dict:
+    """{Dateiname: SHA-1} aller Bilddateien in COVER_DIR."""
+    try:
+        names = [p.name for p in COVER_DIR.iterdir() if p.is_file()]
+    except OSError:
+        return {}
+    return {name: h for name in names if (h := file_hash(name))}
+
+
+def sync_state() -> list:
+    """Alle Cover-Einträge für den Abgleich, je mit dem SHA-1 der eigenen
+    Bilddatei ("sha", leer wenn sie fehlt)."""
+    ensure_table()
+    hashes = file_hashes()
+    return [dict(_record(info), sha=hashes.get(info.datei, "")) for info in load_all().values()]
+
+
+def _record(info: CoverInfo) -> dict:
+    return {"titel": info.titel, "isbn": info.isbn, "datei": info.datei, "quelle": info.quelle,
+            "geprueft_am": info.geprueft_am, "geaendert": info.geaendert, "manuell": info.manuell}
+
+
+def _clean_record(raw) -> Optional[dict]:
+    """Nur gültige Einträge eines anderen Geräts; None sonst."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("titel"), str) or not raw["titel"]:
+        return None
+    rec = {k: raw.get(k) if isinstance(raw.get(k), str) else "" for k in
+           ("titel", "isbn", "datei", "quelle", "geprueft_am", "geaendert", "sha")}
+    rec["manuell"] = bool(raw.get("manuell"))
+    if rec["datei"] and not safe_file_name(rec["datei"]):
+        return None
+    if rec["sha"] and not re.fullmatch(r"[0-9a-f]{40}", rec["sha"]):
+        rec["sha"] = ""
+    return rec
+
+
+def _rank(rec: dict) -> tuple:
+    """Größer = gewinnt (siehe Moduldoku); bei Gleichstand fest nach Inhalt,
+    damit beide Geräte dieselbe Fassung wählen - eine mit Bilddatei vor
+    derselben ohne."""
+    return (rec["manuell"], rec["quelle"] != QUELLE_KEINE, rec["geaendert"], rec["datei"], rec["quelle"],
+            rec["isbn"], rec["geprueft_am"], rec["sha"])
+
+
+def merge_states(local: list, remote: list) -> tuple[dict, list]:
+    """Führt zwei Cover-Stände zusammen (Regeln siehe Moduldoku). Gibt
+    ({titel: Gewinner samt "sha" der gewünschten Bilddatei}, [Titel, deren
+    Eintrag sich gegenüber `local` ändert]) zurück."""
+    local_by_title = {r["titel"]: r for r in map(_clean_record, local) if r}
+    merged = dict(local_by_title)
+    for rec in filter(None, map(_clean_record, remote)):
+        current = merged.get(rec["titel"])
+        if current is None or _rank(rec) > _rank(current):
+            merged[rec["titel"]] = rec
+    fields = ("isbn", "datei", "quelle", "geprueft_am", "geaendert", "manuell")
+    changed = [t for t, rec in merged.items()
+               if t not in local_by_title or any(rec[f] != local_by_title[t][f] for f in fields)]
+    return merged, changed
+
+
+def merge_sync(remote: list) -> tuple[dict, list]:
+    """Führt den Cover-Stand eines anderen Geräts mit dem eigenen zusammen
+    und speichert die geänderten Einträge (mit deren Änderungszeit). Gibt
+    die Rückgabe von merge_states zurück."""
+    merged, changed = merge_states(sync_state(), remote)
+    if changed:
+        with _connect() as conn:
+            for titel in changed:
+                rec = merged[titel]
+                _write(conn, CoverInfo(titel, rec["isbn"], rec["datei"], rec["quelle"], rec["geprueft_am"],
+                                       rec["geaendert"], rec["manuell"]))
+    return merged, changed
+
+
+def wanted_files(merged: dict) -> dict:
+    """Bilddateien, die hier fehlen oder anders aussehen als beim Gewinner:
+    {Dateiname: gewünschter SHA-1}."""
+    hashes = file_hashes()
+    return {rec["datei"]: rec["sha"] for rec in merged.values()
+            if rec["datei"] and rec["sha"] and hashes.get(rec["datei"]) != rec["sha"]}
+
+
+def read_file(datei: str) -> bytes:
+    if not safe_file_name(datei):
+        raise ValueError(f"Ungültiger Dateiname: {datei!r}")
+    return (COVER_DIR / datei).read_bytes()
+
+
+def store_file(datei: str, data: bytes, sha: str) -> None:
+    """Legt eine empfangene Bilddatei ab - nur mit gültigem Namen und wenn
+    der Inhalt zum erwarteten SHA-1 passt."""
+    if not safe_file_name(datei):
+        raise ValueError(f"Ungültiger Dateiname: {datei!r}")
+    if hashlib.sha1(data).hexdigest() != sha:
+        raise ValueError(f"Inhalt von {datei} passt nicht zur Prüfsumme")
+    COVER_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = COVER_DIR / f".{datei}.tmp"
+    tmp.write_bytes(data)
+    os.replace(tmp, COVER_DIR / datei)

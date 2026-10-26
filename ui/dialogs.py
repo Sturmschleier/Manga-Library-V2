@@ -17,7 +17,7 @@ import appinfo
 import config
 import database as db
 import logic
-from ui.common import MONO, close_dialog, copy_text, open_path, open_url
+from ui.common import MONO, can_open_paths, close_dialog, copy_text, is_mobile, open_path, open_url
 from ui.theme import P
 
 TYP_OPTIONEN = ["Manga", "Manhwa", "Light Novel"]
@@ -89,6 +89,7 @@ def open_entry_dialog(page: ft.Page, title: str, on_save: Callable[[dict], None]
             error,
         ],
         spacing=12, tight=True,
+        scroll=ft.ScrollMode.AUTO if is_mobile(page) else None,   # Handy: Platz für die Bildschirmtastatur
     )
     page.show_dialog(ft.AlertDialog(
         modal=True, title=ft.Text(title), content=ft.Container(form, width=620),
@@ -168,10 +169,11 @@ def open_about_dialog(page: ft.Page, data_dir) -> None:
             ft.Text(f"Version {appinfo.VERSION}", weight=ft.FontWeight.BOLD),
             ft.Text("Verwaltet deine Manga-, Manhwa- und Light-Novel-Sammlung."),
             ft.Row([ft.Text("Quellcode und Versionen:"),
-                    ft.TextButton(appinfo.REPOSITORY_URL, on_click=lambda _e: open_url(appinfo.REPOSITORY_URL))],
+                    ft.TextButton(appinfo.REPOSITORY_URL, on_click=lambda _e: open_url(appinfo.REPOSITORY_URL, page))],
                    wrap=True),
             ft.Row([ft.Text("Datenordner (Datenbank, covers, LOG, BACKUP):"),
-                    ft.TextButton(str(data_dir), on_click=lambda _e: open_path(data_dir))], wrap=True),
+                    ft.TextButton(str(data_dir), on_click=lambda _e: open_path(data_dir)) if can_open_paths()
+                    else ft.Text(str(data_dir), selectable=True)], wrap=True),
             ft.Text("Verwendete Module", weight=ft.FontWeight.BOLD),
             table,
         ], tight=True, spacing=6), width=780),

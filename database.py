@@ -7,16 +7,23 @@ Datenbank wird nur beim Start gelesen (load_all) und beim aktiven Speichern
 komplett neu geschrieben (replace_all). Es gibt bewusst keine Funktionen,
 die einzelne Zeilen sofort in die Datenbank schreiben.
 
+Für den Geräte-Abgleich (device_sync.py) trägt jeder Eintrag eine feste
+Kennung (`uid`) und den Zeitpunkt seiner letzten Änderung (`geaendert`);
+gelöschte Einträge hinterlassen einen Löschvermerk (Tabelle `geloescht`).
+Beides pflegt replace_all() selbst, indem es den neuen Stand mit dem
+gespeicherten vergleicht - die Oberfläche muss davon nichts wissen.
+
 Bevor die Datenbankdatei überschrieben wird (Speichern, Google-Drive-
-Download), legt der Aufrufer mit create_backup() eine Sicherung im Ordner
+Download, Geräte-Abgleich), legt der Aufrufer mit create_backup() eine Sicherung im Ordner
 BACKUP/ neben der Datenbank an; es bleiben nur die neuesten
 `db_backup_keep` Sicherungen liegen (config.json, Standard 20).
 """
 
 import os
 import sqlite3
+import uuid
 from contextlib import closing
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 import config
@@ -36,7 +43,8 @@ BACKUP_PREFIX = "manga_library_"
 #   1 = Ausgangszustand (mit VÖ +4 / VÖ +5)
 #   2 = Spalten voe_4 und voe_5 entfernt
 #   3 = bestellt/angekommen enthalten die Bandnummer statt "1"
-SCHEMA_VERSION = 3
+#   4 = Kennung (uid) und Änderungszeit (geaendert) für den Geräte-Abgleich
+SCHEMA_VERSION = 4
 
 # Seit Schema-Version 2 nicht mehr Teil des Datenmodells; werden bei
 # bestehenden Datenbanken in _apply_migrations() entfernt.
@@ -77,12 +85,23 @@ VOE_COLUMNS = ("voe_1", "voe_2", "voe_3")
 #              ist - roter Balken links an der Titelzelle.
 #   Beide entfallen, sobald "Bände (bis)" den markierten Band erreicht
 #   (siehe logic.clear_fulfilled_marks).
+#   uid = feste Kennung des Eintrags, gleich auf allen abgeglichenen Geräten
+#   geaendert = Zeitpunkt der letzten gespeicherten Änderung (UTC, ISO-Format,
+#              als Text sortierbar) - beim Abgleich gewinnt die neuere Fassung
+#   Beide setzt replace_all(); sie gehören zum Eintrag, damit sie Rückgängig
+#   und Speichern unbeschadet überstehen.
 HIDDEN_COLUMNS = [
     ("bestellt", "TEXT"),
     ("angekommen", "TEXT"),
+    ("uid", "TEXT"),
+    ("geaendert", "TEXT"),
 ]
 STORED_COLUMNS = COLUMNS + HIDDEN_COLUMNS
 STORED_COLUMN_NAMES = [c[0] for c in STORED_COLUMNS]
+
+# Felder, die den Inhalt eines Eintrags ausmachen (ohne Kennung und
+# Änderungszeit) - ändert sich eines davon, gilt der Eintrag als geändert.
+CONTENT_COLUMN_NAMES = [c for c in STORED_COLUMN_NAMES if c not in ("uid", "geaendert")]
 
 # Sprechende Beschriftungen für die GUI
 LABELS = {
@@ -99,6 +118,16 @@ LABELS = {
     "voe_2": "VÖ +2",
     "voe_3": "VÖ +3",
 }
+
+
+def now_stamp() -> str:
+    """Aktueller Zeitpunkt (UTC) als sortierbarer Text, z.B.
+    "2026-10-26T14:03:07.123456Z" - für `geaendert` und Löschvermerke."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def new_uid() -> str:
+    return uuid.uuid4().hex
 
 
 def get_connection():
@@ -133,6 +162,9 @@ def _apply_migrations(conn, current_version: int) -> None:
 
     if current_version < 3:
         _migrate_marks_to_band_numbers(conn)
+
+    # Version 4 braucht keine eigene Migration: Die Spalten uid/geaendert
+    # ergänzt init_db, die Werte _fill_sync_fields (bei jedem Start).
 
 
 def _migrate_marks_to_band_numbers(conn) -> None:
@@ -182,11 +214,31 @@ def init_db():
                 conn.execute(f"ALTER TABLE werke ADD COLUMN {name} {ctype}")
         conn.commit()
 
+        conn.execute("CREATE TABLE IF NOT EXISTS geloescht (uid TEXT PRIMARY KEY, geloescht_am TEXT NOT NULL)")
+        conn.commit()
+
         current_version = conn.execute("PRAGMA user_version").fetchone()[0]
         if current_version < SCHEMA_VERSION:
             _apply_migrations(conn, current_version)
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             conn.commit()
+        _fill_sync_fields(conn)
+
+
+def _fill_sync_fields(conn) -> None:
+    """Gibt Einträgen ohne Kennung bzw. Änderungszeit eine - nach dem
+    Umstieg auf Schema-Version 4 oder wenn eine Datenbank aus Version 1
+    eingespielt wurde."""
+    rows = conn.execute(
+        "SELECT id, uid, geaendert FROM werke WHERE COALESCE(uid, '') = '' OR COALESCE(geaendert, '') = ''"
+    ).fetchall()
+    if not rows:
+        return
+    stamp = now_stamp()
+    for row_id, uid, geaendert in rows:
+        conn.execute("UPDATE werke SET uid = ?, geaendert = ? WHERE id = ?",
+                     (uid or new_uid(), geaendert or stamp, row_id))
+    conn.commit()
 
 
 def load_all():
@@ -204,6 +256,11 @@ def replace_all(entries):
     Datenbank (aktives Speichern). Der bisherige Inhalt wird ersetzt, alle
     Einträge bekommen dabei frische, fortlaufende IDs.
 
+    Für den Geräte-Abgleich wird dabei der neue Stand mit dem gespeicherten
+    verglichen: Neue Einträge bekommen eine Kennung (uid), neue und
+    geänderte die aktuelle Änderungszeit (geaendert); für Einträge, die
+    nicht mehr vorkommen, entsteht ein Löschvermerk.
+
     Löschen und Neu-Schreiben laufen in einer einzigen Transaktion: Schlägt
     etwas fehl, wird alles zurückgerollt und die Ausnahme weitergereicht -
     die Datenbank behält dann ihren bisherigen Inhalt.
@@ -211,13 +268,65 @@ def replace_all(entries):
     Gibt den frisch aus der Datenbank geladenen Bestand zurück (mit den
     neu vergebenen IDs), damit der Puffer synchron bleibt.
     """
+    stamp = now_stamp()
+    with closing(get_connection()) as conn, conn:  # commit bei Erfolg, rollback bei einer Ausnahme
+        old = {row["uid"]: dict(row) for row in conn.execute("SELECT * FROM werke") if row["uid"]}
+        rows, seen = [], set()
+        for entry in entries:
+            row = {c: entry.get(c, "") or "" for c in STORED_COLUMN_NAMES}
+            if not row["uid"] or row["uid"] in seen:
+                row["uid"] = new_uid()
+            seen.add(row["uid"])
+            before = old.get(row["uid"])
+            if before is None or any((before.get(c) or "") != row[c] for c in CONTENT_COLUMN_NAMES):
+                row["geaendert"] = stamp
+            rows.append(row)
+        conn.executemany("INSERT OR REPLACE INTO geloescht (uid, geloescht_am) VALUES (?, ?)",
+                         [(uid, stamp) for uid in old.keys() - seen])
+        _write_rows(conn, rows)
+    return load_all()
+
+
+def _write_rows(conn, rows) -> None:
+    """Ersetzt den Inhalt der Tabelle werke durch `rows` (Dicts mit allen
+    STORED_COLUMN_NAMES); Löschvermerke dieser Einträge entfallen."""
     cols = ", ".join(STORED_COLUMN_NAMES)
     placeholders = ", ".join("?" for _ in STORED_COLUMN_NAMES)
-    rows = [[entry.get(c, "") or "" for c in STORED_COLUMN_NAMES] for entry in entries]
-    with closing(get_connection()) as conn, conn:  # commit bei Erfolg, rollback bei einer Ausnahme
-        conn.execute("DELETE FROM werke")
-        conn.executemany(f"INSERT INTO werke ({cols}) VALUES ({placeholders})", rows)
-    return load_all()
+    conn.execute("DELETE FROM werke")
+    conn.executemany(f"INSERT INTO werke ({cols}) VALUES ({placeholders})",
+                     [[row.get(c, "") or "" for c in STORED_COLUMN_NAMES] for row in rows])
+    conn.executemany("DELETE FROM geloescht WHERE uid = ?", [(row["uid"],) for row in rows])
+
+
+# ---------------------------------------------------------------------------
+# Geräte-Abgleich
+# ---------------------------------------------------------------------------
+
+def sync_state() -> dict:
+    """Der gespeicherte Stand für den Geräte-Abgleich: {"entries": [Einträge
+    mit allen STORED_COLUMN_NAMES], "deleted": {uid: Löschzeitpunkt}}."""
+    with closing(get_connection()) as conn:
+        entries = [{c: row[c] or "" for c in STORED_COLUMN_NAMES} for row in conn.execute("SELECT * FROM werke")]
+        deleted = dict(conn.execute("SELECT uid, geloescht_am FROM geloescht").fetchall())
+    return {"entries": entries, "deleted": deleted}
+
+
+def merge_sync(remote: dict) -> dict:
+    """Führt den Stand eines anderen Geräts (siehe sync_state) mit dem
+    gespeicherten zusammen (Regeln: sync_merge.merge) und speichert das
+    Ergebnis - nur wenn sich dabei etwas ändert, dann vorher mit Sicherung
+    ("vor-sync"). Gibt die Zähler zurück (sync_merge.MergeResult.counts)."""
+    import sync_merge
+
+    result = sync_merge.merge(sync_state(), remote)
+    if result.changed:
+        create_backup("vor-sync")
+        with closing(get_connection()) as conn, conn:
+            _write_rows(conn, sorted(result.entries, key=lambda r: (r.get("titel") or "").casefold()))
+            conn.execute("DELETE FROM geloescht")
+            conn.executemany("INSERT INTO geloescht (uid, geloescht_am) VALUES (?, ?)",
+                             list(result.deleted.items()))
+    return result.counts
 
 
 # ---------------------------------------------------------------------------

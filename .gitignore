@@ -26,3 +26,12 @@ manga_library.db.*
 
 # Persönliche Sammlungsliste (CSV)
 Manga - Besitz.csv
+
+# Android-Build (build_apk.py): Zwischenordner und Ausgabe
+.apk-src/
+.apk-out/
+
+# Geräte-Abgleich: Kennung und gekoppelte Geräte dieses Rechners
+sync_geraete.json
+sync_geraete.json.tmp
+export_tmp.csv

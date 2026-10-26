@@ -25,7 +25,7 @@ class LookupActions:
         import isbn_lookup
 
         url = isbn_lookup.buchhandel_de_search_url(titel)
-        if not open_url(url):
+        if not open_url(url, self.page):
             alert(self.page, "buchhandel.de", f"Der Browser konnte nicht geöffnet werden:\n\n{url}")
             return
         self._toast(f"buchhandel.de: Suche nach „{titel}“ geöffnet.")

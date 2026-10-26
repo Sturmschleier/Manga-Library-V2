@@ -15,7 +15,8 @@ dasselbe Format und lässt sich also übernehmen.
 ## Herunterladen und starten
 
 1. Unter [Releases](https://github.com/Sturmschleier/Manga-Library-V2/releases/latest)
-   `MangaLibraryV2.exe` herunterladen (Windows, kein Python nötig).
+   `MangaLibraryV2.exe` herunterladen (Windows, kein Python nötig). Fürs Handy
+   gibt es dort `MangaLibraryV2.apk` (Android, siehe „Android-App“).
 2. In einen eigenen Ordner legen und starten. Die exe legt ihre Daten neben
    sich ab: `manga_library.db`, `config.json`, `covers/`, `LOG/`, `BACKUP/`.
    Für Google Drive gehört `credentials.json` ebenfalls in diesen Ordner.
@@ -123,6 +124,69 @@ dort anpassen und `python assets/make_icon.py` ausführen.
 (Arbeitsordner mit den echten Daten). Die Daten dort bleiben unberührt;
 eine laufende `MangaLibraryV2.exe` dort vorher beenden.
 
+## Android-App (APK) bauen
+
+```bash
+build_apk.bat
+```
+
+Baut `dist\MangaLibraryV2.apk` mit `flet build apk` in derselben Build-Umgebung
+`.venv-build` wie die exe. Voraussetzung ist der **Windows-Entwicklermodus**
+(Einstellungen → System → Für Entwickler). Beim ersten Lauf lädt Flet Flutter,
+JDK 17 und das Android SDK (mehrere GB) nach `E:\Claude\.android-build` – denselben
+Ordner wie die Anime-Liste, nicht nach C:. Ein anderer Ort: Umgebungsvariable
+`MANGALIB_ANDROID_TOOLS`.
+
+Gebaut wird aus dem Zwischenordner `.apk-src`, den `build_apk.py` nur mit dem
+Programmcode, dem Icon und `pyproject.toml` füllt – Datenbank, `config.json`,
+Cover und Google-Zugangsdaten landen also nicht in der APK. App-Name,
+Paketliste und Berechtigungen stehen in `pyproject.toml` (`[project]`,
+`[tool.flet]`), die Versionsnummer kommt aus `appinfo.VERSION`.
+
+Auf dem Handy:
+- eigene Datenbank im privaten App-Ordner; die Sammlung kommt per
+  **Geräte-Abgleich** (siehe unten) aufs Handy
+- kompakte Oberfläche: Symbolleiste mit Menü (☰), Suche, wischbare Filterzeile,
+  Statistik/Termine/Legende unter „Übersicht“, **langes Drücken** auf eine Kachel
+  statt Rechtsklick
+- beim Wechsel in den Hintergrund wird automatisch gespeichert
+- nicht verfügbar: Google Drive (Anmeldung braucht einen Browser auf demselben
+  Gerät), Postfach-Passwort speichern, LOG-Ordner öffnen
+
+Zum Ausprobieren der Handy-Oberfläche am PC: `set MANGALIB_MOBILE=1` vor
+`python main.py`.
+
+## Geräte-Abgleich (WLAN)
+
+Gleicht die Sammlung zwischen beliebigen Geräten im selben WLAN ab (PC, Handy,
+Tablet) – wie bei der Anime-Liste:
+
+1. Auf **beiden** Geräten „Geräte-Abgleich“ öffnen (PC: Werkzeugleiste oder
+   *Datei*; Handy: Sync-Symbol) – nur solange das Fenster offen ist, ist ein
+   Gerät empfangsbereit.
+2. Beim ersten Mal auf einem Gerät „Kopplungscode anzeigen“, auf dem anderen
+   „Im WLAN suchen“ → „Koppeln“ und den Code eingeben (oder die angezeigte
+   IP-Adresse unter „Verbinden“ eintragen).
+3. Danach genügt „Abgleichen“ beim gekoppelten Gerät.
+
+Abgeglichen wird der gespeicherte Stand (ungespeicherte Änderungen werden
+vorher gespeichert). Pro Eintrag gilt die zuletzt gespeicherte Fassung,
+Löschungen werden übertragen, Einträge mit gleichem Titel zusammengelegt. Vor
+jeder Änderung sichert die Bibliothek die Datenbank nach `BACKUP/…_vor-sync.db`.
+
+**Cover** werden mit abgeglichen, samt Bilddateien – übertragen wird nur, was
+auf der anderen Seite fehlt oder anders aussieht. Pro Titel gilt: von Hand
+Entschiedenes (eigenes Bild, „Cover entfernen“, „Cover erneut suchen“ und
+„Cover neu suchen …“) vor automatisch Gefundenem, ein gefundenes Bild vor
+„nichts gefunden“, sonst die zuletzt geänderte Fassung. Ein eigenes Bild vom PC
+landet so auch auf dem Handy, und ein dort automatisch gefundenes Cover
+verdrängt es nicht. Was danach noch fehlt, sucht die Bibliothek selbst.
+Einstellungen (`config.json`) und Passwörter bleiben auf dem Gerät. Kopplungen stehen in
+`sync_geraete.json` neben der Datenbank. Nach dem Koppeln sind alle Anfragen
+signiert (HMAC), andere Geräte im WLAN werden abgewiesen. Am PC fragt die
+Windows-Firewall beim ersten Öffnen, ob der Zugriff im privaten Netzwerk erlaubt
+werden soll – das muss erlaubt werden (Port 47812).
+
 ## Neue Version veröffentlichen
 
 Die exe für ein Release baut **GitHub** (Workflow `.github/workflows/release.yml`)
@@ -134,8 +198,15 @@ auf einem frischen Windows-Rechner mit denselben festen Versionen wie
    schreiben, mergen.
 2. Tag setzen und hochladen, z. B. `git tag v2.0.1 && git push origin v2.0.1`.
 3. Der Workflow prüft, dass der Tag zu `VERSION` passt und auf `main` liegt,
-   baut `MangaLibraryV2.exe`, berechnet die Prüfsumme, erstellt den
-   Herkunftsnachweis und legt das Release mit beiden Dateien an.
+   baut `MangaLibraryV2.exe` (Windows) und `MangaLibraryV2.apk` (Linux),
+   berechnet die Prüfsummen, erstellt die Herkunftsnachweise und legt das
+   Release mit allen Dateien an.
+
+Die APK signiert GitHub mit dem Schlüssel aus den Repository-Secrets
+`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD` und `ANDROID_KEY_ALIAS` –
+demselben wie bei lokalen Builds (`E:\Claude\.android-build\home\.android\debug.keystore`).
+Nur so lässt sich die installierte App auf dem Handy direkt aktualisieren; der
+Workflow prüft das Zertifikat der fertigen APK.
 
 Zum Ausprobieren ohne Release: Reiter **Actions → Release → Run workflow**; die
 exe steht dann als Artefakt am Durchlauf.
@@ -156,7 +227,10 @@ exe steht dann als Artefakt am Durchlauf.
 - `library.py`, `logic.py`, `database.py`, `sorting.py`, `colors.py` … –
   Datenhaltung und Logik, aus Version 1 übernommen
 - `instance_lock.py` – verhindert ein zweites Programmfenster
-- `build.bat`, `build_exe.py`, `requirements-build.txt` – exe-Build; `assets/` – Programm-Icon; `.github/workflows/` – Tests und Release
+- `device_sync.py`, `sync_merge.py`, `ui/sync_dialog.py` – Geräte-Abgleich im WLAN
+  (Netzwerk, Zusammenführungsregeln, Fenster)
+- `build.bat`, `build_exe.py`, `requirements-build.txt` – exe-Build;
+  `build_apk.bat`, `build_apk.py` – Android-Build; `assets/` – Programm-Icon; `.github/workflows/` – Tests und Release
 
 ## Lizenz
 

@@ -1,5 +1,41 @@
-# Konfiguration der Entwicklungswerkzeuge. Das Programm selbst wird nicht als
-# Paket installiert (Start über main.py).
+# Konfiguration der Entwicklungswerkzeuge und des Android-Builds. Das
+# Programm selbst wird nicht als Paket installiert (Start über main.py).
+
+# ------------------------------------------------- Android-App (build_apk.py)
+# "flet build apk" liest [project] und [tool.flet]. Die PC-Version nutzt
+# requirements.txt; in die App kommen nur die Pakete, die dort laufen:
+# Google Drive (Anmeldung im Browser auf demselben Gerät) und keyring
+# (Windows-Anmeldeinformationen) fehlen auf dem Handy bewusst.
+# Die Versionsnummer setzt build_apk.py aus appinfo.VERSION.
+[project]
+name = "mangalibraryv2"
+version = "0.0.0"
+description = "Manga- und Light-Novel-Bibliothek"
+requires-python = ">=3.10"
+dependencies = [
+    "flet==1.0.4",   # wie requirements.txt
+    "requests>=2.28.0",
+]
+
+[tool.flet]
+org = "eu.sturmschleier"
+product = "Manga Library V2"
+company = "Sturmschleier"
+copyright = "© 2026 Sturmschleier, MIT-Lizenz"
+
+[tool.flet.app]
+module = "main"
+
+[tool.flet.android.permission]
+# Internet: VÖ-Termine, Cover, ISBN, Postfach und Geräte-Abgleich im WLAN
+"android.permission.INTERNET" = true
+"android.permission.ACCESS_NETWORK_STATE" = true
+
+# Wie bei der Anime-Liste: Neuere Versionen dieser Plugins (ab Flutter 3.44)
+# setzen AGP 9 voraus, Flets Android-Vorlage nutzt AGP 8.11.
+[tool.flet.flutter.pubspec.dependency_overrides]
+shared_preferences_android = "2.4.23"
+url_launcher_android = "6.3.30"
 
 [tool.ruff]
 # älteste unterstützte Version (Flet 1.0 braucht Python 3.10) - Ruff schlägt nur vor, was dort läuft
@@ -32,6 +68,6 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = [
-    "appinfo", "changelog", "colors", "config", "csv_export", "database", "drive_sync", "gallery", "import_csv", "instance_lock",
-    "isbn_lookup", "library", "logic", "mail_fetch", "main", "models", "order_mail", "paths", "release_calendar", "shops", "sorting", "ui", "vlb_lookup",
+    "appinfo", "build_apk", "changelog", "colors", "config", "csv_export", "database", "device_sync", "drive_sync", "gallery", "import_csv", "instance_lock",
+    "isbn_lookup", "library", "logic", "mail_fetch", "main", "models", "order_mail", "paths", "release_calendar", "shops", "sorting", "sync_merge", "ui", "vlb_lookup",
 ]

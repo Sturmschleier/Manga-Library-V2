@@ -51,6 +51,9 @@ class DataActions:
         alert(self.page, "Import", message, "\n".join(warnings))
 
     async def export_csv(self):
+        if self.mobile:
+            await self._export_csv_mobile()
+            return
         path = await ft.FilePicker().save_file(
             dialog_title="CSV-Export speichern unter", file_name="manga_library_export.csv",
             file_type=ft.FilePickerFileType.CUSTOM, allowed_extensions=["csv"],
@@ -65,6 +68,29 @@ class DataActions:
             alert(self.page, "CSV-Export", f"Export fehlgeschlagen:\n\n{exc}")
             return
         alert(self.page, "CSV-Export", f"{count} Einträge wurden exportiert nach:\n{path}")
+
+    async def _export_csv_mobile(self):
+        """Handy: Der Speichern-Dialog von Android schreibt die Datei selbst
+        und braucht dafür ihren Inhalt - die CSV entsteht deshalb zuerst als
+        Zwischendatei im Datenordner."""
+        tmp = db.DB_FILE.parent / "export_tmp.csv"
+        try:
+            count = csv_export.export_csv(str(tmp), self.buffer.data)
+            data = tmp.read_bytes()
+        except OSError as exc:
+            alert(self.page, "CSV-Export", f"Export fehlgeschlagen:\n\n{exc}")
+            return
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass   # nur Aufräumen
+        path = await ft.FilePicker().save_file(
+            dialog_title="CSV-Export speichern unter", file_name="manga_library_export.csv",
+            file_type=ft.FilePickerFileType.CUSTOM, allowed_extensions=["csv"], src_bytes=data,
+        )
+        if path:
+            alert(self.page, "CSV-Export", f"{count} Einträge wurden exportiert.")
 
     # ---------------------------------------------------------- Bestellungen
 

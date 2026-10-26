@@ -14,7 +14,7 @@ dem Cover. Die Farben lassen sich wie in Version 1 unter "Konfigurieren →
 Farben" abschalten (`colors_enabled`).
 
 Bedienung: Klick wählt die Kachel aus, Doppelklick bearbeitet, Rechtsklick
-öffnet das Kontextmenü.
+öffnet das Kontextmenü - auf dem Handy langes Drücken (TileActions.long_press).
 """
 
 from collections.abc import Callable
@@ -46,6 +46,9 @@ class TileActions:
     plus_baende: Callable
     plus_gelesen: Callable
     context_items: Callable   # row_id -> [ft.PopupMenuItem] für das Rechtsklickmenü
+    # Handy: row_id -> zeigt das Kontextmenü selbst an (statt Rechtsklick).
+    # Flets ContextMenu reagiert auf Touch nicht zuverlässig.
+    long_press: Optional[Callable] = None
 
 
 def _enabled(colors_enabled: dict, key: str) -> bool:
@@ -174,6 +177,17 @@ def build_tile(entry: dict, image, actions: TileActions, colors_enabled: dict,
         bgcolor=P.surface,
         shadow=ft.BoxShadow(spread_radius=3, blur_radius=6, color=P.accent) if selected else None,
     )
+    if actions.long_press is not None:
+        return ft.Container(
+            ft.GestureDetector(
+                content=card,
+                on_tap=lambda _e: actions.select(row_id),
+                on_double_tap=lambda _e: actions.edit(row_id),
+                on_long_press_start=lambda _e: actions.long_press(row_id),
+            ),
+            key=ft.ScrollKey(f"t{row_id}"),
+            data=row_id,
+        )
     return ft.ContextMenu(
         content=ft.GestureDetector(
             content=card,
