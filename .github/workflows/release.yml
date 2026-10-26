@@ -1,17 +1,24 @@
-# Release: baut MangaLibraryV2.exe auf einem frischen GitHub-Rechner (Windows) mit
-# den festen Versionen aus requirements-build.txt (build.bat / build_exe.py) -
-# ohne dass auf einem eigenen Rechner Python oder sonst etwas installiert sein muss.
+# Release: baut MangaLibraryV2.exe (Windows) und MangaLibraryV2.apk (Android, auf
+# Linux) auf frischen GitHub-Rechnern mit den festen Versionen aus
+# requirements-build.txt (build_exe.py bzw. build_apk.py) - ohne dass auf einem
+# eigenen Rechner Python oder sonst etwas installiert sein muss.
+#
+# Die APK wird mit dem Schlüssel aus den Secrets ANDROID_KEYSTORE_BASE64,
+# ANDROID_KEYSTORE_PASSWORD und ANDROID_KEY_ALIAS signiert - demselben wie bei
+# lokalen Builds (build_apk.bat), damit sich die App auf dem Handy direkt
+# aktualisieren lässt. Fehlen die Secrets, bricht der APK-Build ab.
 #
 # Starten:
 #   - Neue Version:  VERSION in appinfo.py per Pull Request anheben und mergen,
 #     dann den Tag setzen:   git tag v2.0.1 && git push origin v2.0.1
-#     Der Workflow baut die exe und legt das Release mit exe und Prüfsumme an.
+#     Der Workflow baut exe und APK und legt das Release mit beiden und ihren
+#     Prüfsummen an.
 #     Den Text liefert docs/release-notes/<Tag>.md, falls vorhanden; dazu
 #     kommen die automatisch erzeugten Änderungen seit dem letzten Release.
 #   - Nur ausprobieren:  Reiter "Actions" -> "Release" -> "Run workflow". Das legt
-#     KEIN Release an; die exe steht als Download am Durchlauf (Artefakt).
+#     KEIN Release an; exe und APK stehen als Download am Durchlauf (Artefakt).
 #
-# Jede gebaute exe bekommt einen Herkunftsnachweis von GitHub (Attestation):
+# exe und APK bekommen einen Herkunftsnachweis von GitHub (Attestation):
 #   gh attestation verify MangaLibraryV2.exe --repo Sturmschleier/Manga-Library-V2
 #
 # Die exe ist nicht signiert - Windows SmartScreen kann beim ersten Start warnen.
@@ -79,9 +86,74 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  apk:
+    name: APK bauen
+    runs-on: ubuntu-latest
+    timeout-minutes: 75   # beim ersten Schritt lädt Flet Flutter, JDK und Android SDK
+    steps:
+      - name: Code auschecken
+        uses: actions/checkout@v5
+
+      - name: Python einrichten
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Build-Werkzeuge installieren (requirements-build.txt)
+        run: python -m pip install --disable-pip-version-check --quiet -r requirements-build.txt
+
+      - name: Signierschlüssel bereitstellen
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          if [ -z "${KEYSTORE_BASE64}" ]; then
+            echo "::error::Secret ANDROID_KEYSTORE_BASE64 fehlt - ohne festen Schlüssel ließe sich die App nicht aktualisieren"
+            exit 1
+          fi
+          keystore="${RUNNER_TEMP}/release.keystore"
+          echo "${KEYSTORE_BASE64}" | base64 -d > "${keystore}"
+          {
+            echo "FLET_ANDROID_SIGNING_KEY_STORE=${keystore}"
+            echo "FLET_ANDROID_SIGNING_KEY_STORE_PASSWORD=${KEYSTORE_PASSWORD}"
+            echo "FLET_ANDROID_SIGNING_KEY_PASSWORD=${KEYSTORE_PASSWORD}"
+            echo "FLET_ANDROID_SIGNING_KEY_ALIAS=${KEY_ALIAS}"
+          } >> "$GITHUB_ENV"
+
+      - name: APK bauen (build_apk.py)
+        env:
+          MANGALIB_ANDROID_TOOLS: ${{ runner.temp }}/android-build
+        run: python build_apk.py
+
+      - name: Ergebnis und Signatur prüfen
+        run: |
+          size=$(stat -c%s dist/MangaLibraryV2.apk)
+          if [ "${size}" -lt 50000000 ]; then
+            echo "::error::MangaLibraryV2.apk ist nur ${size} Bytes groß"
+            exit 1
+          fi
+          expected=$(keytool -list -v -keystore "${FLET_ANDROID_SIGNING_KEY_STORE}" \
+            -storepass "${FLET_ANDROID_SIGNING_KEY_STORE_PASSWORD}" -alias "${FLET_ANDROID_SIGNING_KEY_ALIAS}" \
+            | grep -m1 "SHA256:" | awk '{print $2}')
+          actual=$(keytool -printcert -jarfile dist/MangaLibraryV2.apk | grep -m1 "SHA256:" | awk '{print $2}')
+          echo "Zertifikat der APK: ${actual}"
+          if [ -z "${expected}" ] || [ "${expected}" != "${actual}" ]; then
+            echo "::error::Die APK ist nicht mit dem hinterlegten Schlüssel signiert (erwartet ${expected})"
+            exit 1
+          fi
+
+      - name: APK als Artefakt hochladen
+        uses: actions/upload-artifact@v7
+        with:
+          name: apk-build
+          path: dist/MangaLibraryV2.apk
+          if-no-files-found: error
+          retention-days: 7
+
   finalize:
     name: Prüfsumme, Herkunftsnachweis, Release
-    needs: build
+    needs: [build, apk]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -98,30 +170,42 @@ jobs:
           name: exe-build
           path: final
 
-      - name: Prüfsumme berechnen
+      - name: Fertige APK laden
+        uses: actions/download-artifact@v8
+        with:
+          name: apk-build
+          path: final
+
+      - name: Prüfsummen berechnen
         working-directory: final
         run: |
-          sha256sum MangaLibraryV2.exe | sed 's/ \*/  /' > MangaLibraryV2.exe.sha256
-          cat MangaLibraryV2.exe.sha256
-          {
-            echo "### MangaLibraryV2.exe"
-            echo
-            echo "- Größe: $(stat -c%s MangaLibraryV2.exe) Bytes"
-            echo "- SHA-256: \`$(cut -d' ' -f1 MangaLibraryV2.exe.sha256)\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+          for file in MangaLibraryV2.exe MangaLibraryV2.apk; do
+            sha256sum "${file}" | sed 's/ \*/  /' > "${file}.sha256"
+            cat "${file}.sha256"
+            {
+              echo "### ${file}"
+              echo
+              echo "- Größe: $(stat -c%s "${file}") Bytes"
+              echo "- SHA-256: \`$(cut -d' ' -f1 "${file}.sha256")\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
 
       - name: Herkunftsnachweis erstellen
         uses: actions/attest-build-provenance@v4
         with:
-          subject-path: final/MangaLibraryV2.exe
+          subject-path: |
+            final/MangaLibraryV2.exe
+            final/MangaLibraryV2.apk
 
-      - name: exe und Prüfsumme als Artefakt bereitstellen
+      - name: exe, APK und Prüfsummen als Artefakt bereitstellen
         uses: actions/upload-artifact@v7
         with:
           name: MangaLibraryV2
           path: |
             final/MangaLibraryV2.exe
             final/MangaLibraryV2.exe.sha256
+            final/MangaLibraryV2.apk
+            final/MangaLibraryV2.apk.sha256
           if-no-files-found: error
           retention-days: 30
 
@@ -133,7 +217,8 @@ jobs:
           tag="${GITHUB_REF_NAME}"
           if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             # Release existiert schon (z. B. mit von Hand geschriebenem Text): nur die Dateien ersetzen
-            gh release upload "${tag}" final/MangaLibraryV2.exe final/MangaLibraryV2.exe.sha256 --clobber \
+            gh release upload "${tag}" final/MangaLibraryV2.exe final/MangaLibraryV2.exe.sha256 \
+              final/MangaLibraryV2.apk final/MangaLibraryV2.apk.sha256 --clobber \
               --repo "${GITHUB_REPOSITORY}"
             exit 0
           fi
@@ -150,8 +235,10 @@ jobs:
           - **Aktualisieren:** Programm beenden und die exe im Ordner durch die neue ersetzen - die Daten bleiben erhalten.
           - Beim allerersten Start entpackt die exe das Programmfenster einmalig nach \`%USERPROFILE%\\.flet\\client\` - das dauert ein paar Sekunden.
           - Die exe ist **nicht signiert**: Windows SmartScreen kann beim ersten Start warnen (Weitere Informationen -> Trotzdem ausführen).
-          - **Prüfen:** SHA-256 steht in \`MangaLibraryV2.exe.sha256\`; die Herkunft bestätigt \`gh attestation verify MangaLibraryV2.exe --repo ${GITHUB_REPOSITORY}\`.
+          - **Android:** \`MangaLibraryV2.apk\` aufs Handy laden und öffnen (Installation aus unbekannten Quellen erlauben). Eine bereits installierte Version wird direkt aktualisiert, die Daten bleiben. Die Sammlung kommt per **Geräte-Abgleich** (WLAN) vom PC aufs Handy.
+          - **Prüfen:** SHA-256 steht in den \`.sha256\`-Dateien; die Herkunft bestätigt \`gh attestation verify MangaLibraryV2.exe --repo ${GITHUB_REPOSITORY}\` (ebenso für die APK).
           EOF
           gh release create "${tag}" final/MangaLibraryV2.exe final/MangaLibraryV2.exe.sha256 \
+            final/MangaLibraryV2.apk final/MangaLibraryV2.apk.sha256 \
             --repo "${GITHUB_REPOSITORY}" --title "Manga Library V2 ${tag}" \
             --notes-file notes.md --generate-notes --verify-tag --latest

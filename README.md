@@ -15,7 +15,8 @@ dasselbe Format und lässt sich also übernehmen.
 ## Herunterladen und starten
 
 1. Unter [Releases](https://github.com/Sturmschleier/Manga-Library-V2/releases/latest)
-   `MangaLibraryV2.exe` herunterladen (Windows, kein Python nötig).
+   `MangaLibraryV2.exe` herunterladen (Windows, kein Python nötig). Fürs Handy
+   gibt es dort `MangaLibraryV2.apk` (Android, siehe „Android-App“).
 2. In einen eigenen Ordner legen und starten. Die exe legt ihre Daten neben
    sich ab: `manga_library.db`, `config.json`, `covers/`, `LOG/`, `BACKUP/`.
    Für Google Drive gehört `credentials.json` ebenfalls in diesen Ordner.
@@ -197,8 +198,15 @@ auf einem frischen Windows-Rechner mit denselben festen Versionen wie
    schreiben, mergen.
 2. Tag setzen und hochladen, z. B. `git tag v2.0.1 && git push origin v2.0.1`.
 3. Der Workflow prüft, dass der Tag zu `VERSION` passt und auf `main` liegt,
-   baut `MangaLibraryV2.exe`, berechnet die Prüfsumme, erstellt den
-   Herkunftsnachweis und legt das Release mit beiden Dateien an.
+   baut `MangaLibraryV2.exe` (Windows) und `MangaLibraryV2.apk` (Linux),
+   berechnet die Prüfsummen, erstellt die Herkunftsnachweise und legt das
+   Release mit allen Dateien an.
+
+Die APK signiert GitHub mit dem Schlüssel aus den Repository-Secrets
+`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD` und `ANDROID_KEY_ALIAS` –
+demselben wie bei lokalen Builds (`E:\Claude\.android-build\home\.android\debug.keystore`).
+Nur so lässt sich die installierte App auf dem Handy direkt aktualisieren; der
+Workflow prüft das Zertifikat der fertigen APK.
 
 Zum Ausprobieren ohne Release: Reiter **Actions → Release → Run workflow**; die
 exe steht dann als Artefakt am Durchlauf.
