@@ -362,10 +362,9 @@ def find_next_volumes(entry: dict, products: list[dict]) -> tuple[dict[int, Volu
     vorkommt. Bleibt es mehrdeutig, wird nichts vorgeschlagen.
 
     Passt so gar nichts, wird ein zweites Mal ohne Verlagsprüfung gesucht
-    (Imprints: "C Lines" erscheint bei Carlsen, "Pegasus Manga" bei Kazé)
-    und bei Light Novels auch ohne "Light Novel" im Titel ("Goblin Slayer!
-    17"), sofern keiner der Treffer eine Light Novel ist. Dann zählt nur ein
-    Titelstamm, in dem der besessene Band vorkommt - das bestätigt die Serie.
+    (Imprints: "C Lines" erscheint bei Carlsen, "Pegasus Manga" bei Kazé).
+    Dann zählt nur ein Titelstamm, in dem der besessene Band vorkommt - das
+    bestätigt die Serie.
     """
     groups = _volume_groups(entry, products, strict=True)
     if not groups:
@@ -392,9 +391,7 @@ def find_next_volumes(entry: dict, products: list[dict]) -> tuple[dict[int, Volu
 
 
 def _is_light_novel(entry: dict) -> bool:
-    """Light Novel laut Typ - oder laut Titel ("… – Light Novel"), auch wenn der Typ anders lautet."""
-    typ = (entry.get("typ") or "").strip().lower()
-    return typ == "light novel" or bool(re.search(r"light[\s-]*novel", entry.get("titel") or "", re.IGNORECASE))
+    return (entry.get("typ") or "").strip().lower() == "light novel"
 
 
 def _exact_names(titel: str, is_ln: bool) -> set[str]:
@@ -420,9 +417,9 @@ def _volume_groups(entry: dict, products: list[dict], strict: bool) -> dict[str,
     ]
     if is_ln:
         # Nur Treffer, die erkennbar Light Novels sind - sonst würde die
-        # Manga-Ausgabe derselben Reihe untergemischt
-        if strict or any(_looks_like_light_novel(p) for p in products):
-            products = [p for p in products if _looks_like_light_novel(p)]
+        # Manga-Ausgabe derselben Reihe untergemischt ("Goblin Slayer! 17"
+        # ist der Manga, die Light Novel heißt "Goblin Slayer! Light Novel 17")
+        products = [p for p in products if _looks_like_light_novel(p)]
     elif typ in ("manga", "manhwa"):
         products = [p for p in products if not _has_light_novel(p)]
 
