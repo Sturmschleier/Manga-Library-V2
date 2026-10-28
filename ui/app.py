@@ -54,11 +54,14 @@ from ui.actions_lookup import LookupActions
 from ui.common import alert, ask, can_open_paths, close_dialog, confirm, is_mobile, on_ui, open_path
 from ui.sidebar import Sidebar
 from ui.theme import P
-from ui.tile import TILE_ASPECT, TILE_ASPECT_LARGE, TILE_WIDTH, TILE_WIDTH_LARGE, TileActions, build_row, build_tile
+from ui.tile import COVER_RATIO, DETAILS_HEIGHT, TILE_ASPECT, TILE_WIDTH, TileActions, build_row, build_tile
 
 MENU_WIDTH = 390   # Menüeinträge sonst so schmal wie die Menüleiste - Texte würden abgeschnitten
 MOBILE_MENU_WIDTH = 290
-SEARCH_DELAY_SECONDS = 0.2   # Suche erst nach kurzer Tipp-Pause auswerten
+SEARCH_DELAY_SECONDS = 0.2
+GRID_SPACING = 14
+GRID_PADDING = ft.Padding.only(top=4, bottom=12, right=8, left=4)
+LARGE_TILE_SCALE = 1.5   # große Kacheln: 50 % breiter   # Suche erst nach kurzer Tipp-Pause auswerten
 VIEW_KACHELN, VIEW_KACHELN_GROSS, VIEW_LISTE = "kacheln", "kacheln_gross", "liste"
 VIEW_OPTIONS = (   # (Schlüssel, Symbol, Tooltip) - Reihenfolge der Knöpfe
     (VIEW_KACHELN, ft.Icons.APPS, "Kacheln"),
@@ -219,11 +222,14 @@ class MangaApp(CoverActions, DataActions, LookupActions):
             )
             filters = ft.Row(filter_controls, spacing=8, wrap=True, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
+        # Spaltenzahl und Seitenverhältnis rechnet _layout_grid aus der
+        # tatsächlichen Breite des Rasters (on_size_change)
+        self._grid_width = None
         self.grid = ft.GridView(
-            expand=True, max_extent=TILE_WIDTH, child_aspect_ratio=TILE_ASPECT, spacing=14, run_spacing=14,
-            padding=ft.Padding.only(top=4, bottom=12, right=8, left=4),
+            expand=True, max_extent=TILE_WIDTH, child_aspect_ratio=TILE_ASPECT, spacing=GRID_SPACING,
+            run_spacing=GRID_SPACING, padding=GRID_PADDING, on_size_change=self._on_grid_size,
         )
-        self.list_view = ft.ListView(expand=True, spacing=6, padding=ft.Padding.only(top=4, bottom=12, right=8, left=4))
+        self.list_view = ft.ListView(expand=True, spacing=6, padding=GRID_PADDING)
         self.search_field = ft.TextField(dense=True, expand=True, prefix_icon=ft.Icons.SEARCH, bgcolor=P.surface,
                                          on_change=self._on_search_change)
         self.sidebar = Sidebar(self.search_field, on_open_month=self._open_calendar_month,
@@ -355,14 +361,38 @@ class MangaApp(CoverActions, DataActions, LookupActions):
 
     def _apply_view_mode(self):
         """Raster bzw. Liste zeigen, Kachelgröße setzen, Knopf markieren."""
-        large = self.view_mode == VIEW_KACHELN_GROSS
-        width = TILE_WIDTH_LARGE if large else TILE_WIDTH
-        self.grid.max_extent = width - 20 if self.mobile else width
-        self.grid.child_aspect_ratio = TILE_ASPECT_LARGE if large else TILE_ASPECT
+        self._layout_grid()
         self.grid.visible = self.view_mode != VIEW_LISTE
         self.list_view.visible = self.view_mode == VIEW_LISTE
         for key, button in self.view_buttons.items():
             button.selected = key == self.view_mode
+
+    def _layout_grid(self) -> bool:
+        """Spalten und Seitenverhältnis des Rasters passend zur Breite, damit
+        das Cover die Kachel ganz ausfüllt - True, wenn sich etwas ändert.
+        Vor der ersten Größenmeldung: max_extent mit der normalen Kachel."""
+        if not self._grid_width:
+            return False
+        width = self._grid_width - GRID_PADDING.left - GRID_PADDING.right
+        scale = LARGE_TILE_SCALE if self.view_mode == VIEW_KACHELN_GROSS else 1.0
+        tile_width = TILE_WIDTH - 20 if self.mobile else TILE_WIDTH
+        columns = gallery.grid_columns(width, tile_width, GRID_SPACING, scale)
+        aspect = gallery.tile_aspect(width, columns, GRID_SPACING, COVER_RATIO, DETAILS_HEIGHT)
+        # Flutter teilt in ceil(Breite / (max_extent + Abstand)) Spalten -
+        # max_extent so gewählt, dass genau `columns` herauskommen
+        # (runs_count greift nicht, solange max_extent gesetzt ist)
+        max_extent = width / columns - GRID_SPACING + 0.5
+        if (abs(self.grid.max_extent - max_extent) < 0.01
+                and abs(self.grid.child_aspect_ratio - aspect) < 0.0001):
+            return False
+        self.grid.max_extent = max_extent
+        self.grid.child_aspect_ratio = aspect
+        return True
+
+    def _on_grid_size(self, e: ft.LayoutSizeChangeEvent):
+        self._grid_width = e.width
+        if self._layout_grid():
+            self.page.update()
 
     def set_view_mode(self, mode: str):
         """Ansicht wechseln (Kacheln, große Kacheln, Liste) und merken."""

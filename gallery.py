@@ -11,6 +11,7 @@ Der Status steht wie in Version 1 in der Spalte "VÖ +1" (voe_1): "Beendet",
 Freitext wie "Band 17 11.06.2025") gilt als laufende Reihe.
 """
 
+import math
 from datetime import date
 from typing import Optional
 
@@ -161,6 +162,31 @@ def visible_entries(entries, search="", verlag=FILTER_ALL, voe1=FILTER_ALL, orde
     """Gefiltert und sortiert - genau das, was die Kachelansicht zeigt."""
     shown = [e for e in entries if matches(e, search, verlag, voe1, order, typ)]
     return sort_entries(shown, sort_column, reverse)
+
+
+# --------------------------------------------------------- Kachelraster
+
+def grid_columns(width: float, tile_width: float, spacing: float, scale: float = 1.0) -> int:
+    """Spaltenzahl des Kachelrasters bei `width` Pixeln Platz. Normale
+    Kacheln wie Flutters max_extent: so viele Spalten, dass keine Kachel
+    breiter als `tile_width` wird. Mit `scale` (große Kacheln) werden die
+    Kacheln möglichst `scale`-mal so breit wie die normalen - mindestens
+    aber eine Spalte weniger, sonst wären sie auf schmalen Bildschirmen
+    (Handy hochkant, zwei Spalten) gar nicht größer."""
+    normal = max(1, math.ceil(width / (tile_width + spacing)))
+    if scale == 1.0:
+        return normal
+    normal_width = (width - spacing * (normal - 1)) / normal
+    wanted = round((width + spacing) / (normal_width * scale + spacing))
+    return max(1, min(normal - 1, wanted))
+
+
+def tile_aspect(width: float, columns: int, spacing: float, cover_ratio: float, details_height: float) -> float:
+    """Seitenverhältnis (Breite : Höhe) einer Kachel, wenn `columns`
+    Spalten `width` Pixel teilen: das Cover füllt die Kachelbreite ganz aus,
+    darunter die Textzeilen mit fester Höhe."""
+    tile_w = max(1.0, (width - spacing * (columns - 1)) / columns)
+    return tile_w / (tile_w / cover_ratio + details_height)
 
 
 # --------------------------------------------------------- Seitenleiste

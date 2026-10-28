@@ -159,3 +159,27 @@ def test_status_counts_in_legend_order():
     assert list(counts) == list(gallery.STATUS_LABELS.values())
     assert counts["Beendet"] == 2
     assert counts["Laufend"] == 1
+
+
+# ------------------------------------------------------------ Kachelraster
+
+def test_grid_columns_like_max_extent():
+    assert gallery.grid_columns(1000, 220, 14) == 5     # 1000 / 234 = 4,3 -> 5 Spalten à ~189 px
+    assert gallery.grid_columns(400, 200, 14) == 2
+    assert gallery.grid_columns(100, 220, 14) == 1
+
+
+def test_grid_columns_large_tiles_are_wider():
+    # Handy hochkant: normal 2 Spalten, groß 1 Spalte (vorher auch 2)
+    assert gallery.grid_columns(400, 200, 14, 1.5) == 1
+    # PC: 5 normale Spalten à ~189 px -> 3 große à ~324 px
+    assert gallery.grid_columns(1000, 220, 14, 1.5) == 3
+    # nie mehr als eine Spalte
+    assert gallery.grid_columns(100, 220, 14, 1.5) == 1
+
+
+def test_tile_aspect_fills_cover_width():
+    aspect = gallery.tile_aspect(414, 2, 14, 0.72, 198)
+    tile_w = 200
+    assert aspect == pytest.approx(tile_w / (tile_w / 0.72 + 198))
+

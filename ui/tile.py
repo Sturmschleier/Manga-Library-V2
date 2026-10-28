@@ -13,8 +13,8 @@ gespeicherte Termine rot). Der Rahmen zeigt den Status
 dem Cover. Die Farben lassen sich wie in Version 1 unter "Konfigurieren →
 Farben" abschalten (`colors_enabled`).
 
-Die großen Kacheln (TILE_WIDTH_LARGE, 50 % breiter) sind dieselbe Kachel -
-nur der Platz im Raster ist größer, das Cover wächst mit. Für die
+Die großen Kacheln (50 % breiter, siehe gallery.grid_columns) sind dieselbe
+Kachel - nur der Platz im Raster ist größer, das Cover wächst mit. Für die
 Listenansicht baut build_row eine Zeile mit kleinem Cover und denselben
 Angaben nebeneinander (auf dem Handy zweizeilig, `compact`).
 
@@ -38,8 +38,6 @@ TILE_WIDTH = 220
 COVER_RATIO = 0.72          # Breite : Höhe eines typischen Manga-Covers
 DETAILS_HEIGHT = 198        # feste Höhe aller Zeilen unter dem Cover
 TILE_ASPECT = TILE_WIDTH / (TILE_WIDTH / COVER_RATIO + DETAILS_HEIGHT)
-TILE_WIDTH_LARGE = TILE_WIDTH * 3 // 2
-TILE_ASPECT_LARGE = TILE_WIDTH_LARGE / (TILE_WIDTH_LARGE / COVER_RATIO + DETAILS_HEIGHT)
 ROW_HEIGHT = 84             # Listenansicht: Höhe einer Zeile (PC)
 ROW_HEIGHT_COMPACT = 104    # Listenansicht auf dem Handy (zweizeilig)
 THUMB_WIDTH = 52
