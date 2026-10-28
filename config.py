@@ -74,6 +74,9 @@ DEFAULTS = {
     # Farbschema: "system" (wie Windows), "light" oder "dark" - auch über
     # "Konfigurieren → Darstellung"
     "theme_mode": "system",
+    # Ansicht der Einträge: "kacheln", "kacheln_gross" (50 % größer) oder
+    # "liste" - auch über die Knöpfe neben den Filtern
+    "view_mode": "kacheln",
 }
 
 
@@ -83,6 +86,7 @@ ALLOWED_VALUES = {
     "mail_imap_security": ("ssl", "starttls"),
     "csv_delimiter": (";", ",", "\t"),
     "theme_mode": ("system", "light", "dark"),
+    "view_mode": ("kacheln", "kacheln_gross", "liste"),
 }
 
 

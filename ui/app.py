@@ -9,7 +9,8 @@ Das Hauptfenster - aufgebaut wie Version 1, nur mit Kacheln statt Tabelle:
   Typ), Sortierung
 - Veröffentlichungskalender je Monat (ui/calendar_dialog.py)
 - Kachelansicht (Klick wählt aus, Doppelklick bearbeitet, Rechtsklick öffnet
-  das Kontextmenü)
+  das Kontextmenü) - umschaltbar auf große Kacheln oder eine Liste
+  (VIEW_OPTIONS, gemerkt als "view_mode")
 - Seitenleiste rechts (ui/sidebar.py): Suche, Statistik, Verlage, Typen,
   Erscheinungstermine, Live-Log
 - Statuszeile mit Anzahl, ungespeicherten Änderungen, Cover-Suche und
@@ -53,11 +54,17 @@ from ui.actions_lookup import LookupActions
 from ui.common import alert, ask, can_open_paths, close_dialog, confirm, is_mobile, on_ui, open_path
 from ui.sidebar import Sidebar
 from ui.theme import P
-from ui.tile import TILE_ASPECT, TILE_WIDTH, TileActions, build_tile
+from ui.tile import TILE_ASPECT, TILE_ASPECT_LARGE, TILE_WIDTH, TILE_WIDTH_LARGE, TileActions, build_row, build_tile
 
 MENU_WIDTH = 390   # Menüeinträge sonst so schmal wie die Menüleiste - Texte würden abgeschnitten
 MOBILE_MENU_WIDTH = 290
 SEARCH_DELAY_SECONDS = 0.2   # Suche erst nach kurzer Tipp-Pause auswerten
+VIEW_KACHELN, VIEW_KACHELN_GROSS, VIEW_LISTE = "kacheln", "kacheln_gross", "liste"
+VIEW_OPTIONS = (   # (Schlüssel, Symbol, Tooltip) - Reihenfolge der Knöpfe
+    (VIEW_KACHELN, ft.Icons.APPS, "Kacheln"),
+    (VIEW_KACHELN_GROSS, ft.Icons.GRID_VIEW, "Große Kacheln"),
+    (VIEW_LISTE, ft.Icons.VIEW_LIST, "Liste"),
+)
 COLOR_OPTIONS = (
     ("voe1", "VÖ +1 (Beendet/TBA/Gestoppt/NA)"),
     ("komplett_beendet", "Komplett/Beendet"),
@@ -103,6 +110,9 @@ class MangaApp(CoverActions, DataActions, LookupActions):
         self.sort_column = "titel"
         self.sort_reverse = False
         self.colors_enabled = config.get_dict("colors_enabled")
+        self.view_mode = config.get("view_mode", VIEW_KACHELN)
+        if self.view_mode not in {k for k, _i, _t in VIEW_OPTIONS}:
+            self.view_mode = VIEW_KACHELN
         self.tile_actions = TileActions(
             select=self.select, edit=self.edit_entry, plus_baende=self.increment_baende,
             plus_gelesen=self.increment_gelesen, context_items=self._context_items,
@@ -184,8 +194,15 @@ class MangaApp(CoverActions, DataActions, LookupActions):
             tooltip="Veröffentlichungen eines Monats, nach Erscheinungstag (Strg+K)",
         )
 
+        self.view_buttons = {
+            key: ft.IconButton(icon, tooltip=f"Ansicht: {tooltip}", selected_icon=icon,
+                               on_click=lambda _e, k=key: self.set_view_mode(k),
+                               style=ft.ButtonStyle(bgcolor={ft.ControlState.SELECTED: P.chip}))
+            for key, icon, tooltip in VIEW_OPTIONS
+        }
+        view_switch = ft.Row(list(self.view_buttons.values()), spacing=0, tight=True)
         filter_controls = [self.verlag_filter, self.voe1_filter, self.order_filter, self.typ_filter,
-                           self.sort_choice, self.sort_dir_btn, reset_btn]
+                           self.sort_choice, self.sort_dir_btn, reset_btn, _separator(), view_switch]
         if self.mobile:
             # Handy: Filter aufklappbar (Knopf neben der Suche). Ohne Scrollen,
             # sonst schneidet die Zeile die Beschriftung über den Feldern ab.
@@ -206,6 +223,7 @@ class MangaApp(CoverActions, DataActions, LookupActions):
             expand=True, max_extent=TILE_WIDTH, child_aspect_ratio=TILE_ASPECT, spacing=14, run_spacing=14,
             padding=ft.Padding.only(top=4, bottom=12, right=8, left=4),
         )
+        self.list_view = ft.ListView(expand=True, spacing=6, padding=ft.Padding.only(top=4, bottom=12, right=8, left=4))
         self.search_field = ft.TextField(dense=True, expand=True, prefix_icon=ft.Icons.SEARCH, bgcolor=P.surface,
                                          on_change=self._on_search_change)
         self.sidebar = Sidebar(self.search_field, on_open_month=self._open_calendar_month,
@@ -233,12 +251,13 @@ class MangaApp(CoverActions, DataActions, LookupActions):
                 self.menubar,
                 toolbar,
                 filters,
-                ft.Row([ft.Column([self.grid], expand=True), self.sidebar_box], expand=True,
+                ft.Row([ft.Column([self.grid, self.list_view], expand=True), self.sidebar_box], expand=True,
                        vertical_alignment=ft.CrossAxisAlignment.STRETCH),
                 footer,
             ],
             expand=True, spacing=6,
         ))
+        self._apply_view_mode()
         self._apply_sidebar_width()
 
     def _build_mobile(self, filters):
@@ -271,12 +290,12 @@ class MangaApp(CoverActions, DataActions, LookupActions):
 
         filter_btn = icon_btn(ft.Icons.FILTER_LIST, "Filter und Sortierung", toggle_filters,
                               selected_icon=ft.Icons.FILTER_LIST_OFF)
-        self.grid.max_extent = TILE_WIDTH - 20
         footer = ft.Row([self.status_text, self.cover_status, self.cover_cancel_btn], spacing=8, wrap=True)
         self.page.add(ft.SafeArea(ft.Column(
-            [top, ft.Row([self.search_field, filter_btn]), filters, self.grid, footer],
+            [top, ft.Row([self.search_field, filter_btn]), filters, self.grid, self.list_view, footer],
             expand=True, spacing=4,
         ), expand=True))
+        self._apply_view_mode()
 
     def _show_overview(self):
         """Handy: Seitenleiste (Statistik, Verlage, Typen, Termine, Live-Log)
@@ -328,6 +347,35 @@ class MangaApp(CoverActions, DataActions, LookupActions):
             options=[ft.DropdownOption(key=o, text=o) for o in options],
             on_select=lambda _e: self._refresh_tiles(),
         )
+
+    @property
+    def _view(self):
+        """Die gerade sichtbare Ansicht (Kachelraster oder Liste)."""
+        return self.list_view if self.view_mode == VIEW_LISTE else self.grid
+
+    def _apply_view_mode(self):
+        """Raster bzw. Liste zeigen, Kachelgröße setzen, Knopf markieren."""
+        large = self.view_mode == VIEW_KACHELN_GROSS
+        width = TILE_WIDTH_LARGE if large else TILE_WIDTH
+        self.grid.max_extent = width - 20 if self.mobile else width
+        self.grid.child_aspect_ratio = TILE_ASPECT_LARGE if large else TILE_ASPECT
+        self.grid.visible = self.view_mode != VIEW_LISTE
+        self.list_view.visible = self.view_mode == VIEW_LISTE
+        for key, button in self.view_buttons.items():
+            button.selected = key == self.view_mode
+
+    def set_view_mode(self, mode: str):
+        """Ansicht wechseln (Kacheln, große Kacheln, Liste) und merken."""
+        if mode == self.view_mode:
+            return
+        config.set_value("view_mode", mode)
+        self.view_mode = mode
+        self.grid.controls = []
+        self.list_view.controls = []
+        self._apply_view_mode()
+        self._refresh_tiles()
+        if self.selected_id is not None:
+            self.page.run_task(self._scroll_to_selected)
 
     def _apply_sidebar_width(self):
         """Breite der Seitenleiste als Anteil der Fensterbreite
@@ -630,7 +678,7 @@ class MangaApp(CoverActions, DataActions, LookupActions):
         if self.selected_id is not None and all(e.get("id") != self.selected_id for e in shown):
             self.selected_id = None
         with self._ui_lock:
-            self.grid.controls = [self._tile(e) for e in shown]
+            self._view.controls = [self._tile(e) for e in shown]
             self.status_text.value = f"{len(shown)} Einträge" + (
                 "  —  ungespeicherte Änderungen" if self.buffer.dirty else "")
             self._refresh_border_legend()
@@ -638,8 +686,11 @@ class MangaApp(CoverActions, DataActions, LookupActions):
             self.page.update()
 
     def _tile(self, entry):
-        return build_tile(entry, self._image_for(entry.get("titel") or ""), self.tile_actions,
-                          self.colors_enabled, selected=entry.get("id") == self.selected_id)
+        image = self._image_for(entry.get("titel") or "")
+        selected = entry.get("id") == self.selected_id
+        if self.view_mode == VIEW_LISTE:
+            return build_row(entry, image, self.tile_actions, self.colors_enabled, selected, compact=self.mobile)
+        return build_tile(entry, image, self.tile_actions, self.colors_enabled, selected=selected)
 
     def _refresh_chrome(self):
         dirty = self.buffer.dirty
@@ -653,19 +704,19 @@ class MangaApp(CoverActions, DataActions, LookupActions):
         Position bleibt, damit die Kachel nicht unter dem Mauszeiger wegspringt."""
         entry = self.buffer.find(row_id)
         with self._ui_lock:
-            for i, control in enumerate(self.grid.controls):
+            for i, control in enumerate(self._view.controls):
                 if control.data == row_id and entry is not None:
-                    self.grid.controls[i] = self._tile(entry)
+                    self._view.controls[i] = self._tile(entry)
                     break
             self.page.update()
 
     def _replace_tiles_of(self, titel: str):
         """Kacheln mit diesem Titel neu zeichnen (nach einem neuen Cover)."""
         with self._ui_lock:
-            for i, control in enumerate(self.grid.controls):
+            for i, control in enumerate(self._view.controls):
                 entry = self.buffer.find(control.data)
                 if entry is not None and (entry.get("titel") or "") == titel:
-                    self.grid.controls[i] = self._tile(entry)
+                    self._view.controls[i] = self._tile(entry)
             self.page.update()
 
     def _after_change(self):
@@ -677,7 +728,7 @@ class MangaApp(CoverActions, DataActions, LookupActions):
 
     async def _scroll_to_selected(self):
         try:
-            await self.grid.scroll_to(scroll_key=f"t{self.selected_id}", duration=300)
+            await self._view.scroll_to(scroll_key=f"t{self.selected_id}", duration=300)
         except Exception:  # noqa: BLE001 - Kachel gerade nicht sichtbar (Filter): dann eben nicht springen
             pass
 
@@ -836,7 +887,7 @@ class MangaApp(CoverActions, DataActions, LookupActions):
         erst beim nächsten Neuaufbau, damit sie nicht unter dem Mauszeiger
         wegspringt."""
         self.sidebar.update(self.buffer.data, config.get_bool("exclude_gestoppt_from_stats"))
-        self.status_text.value = f"{len(self.grid.controls)} Einträge" + (
+        self.status_text.value = f"{len(self._view.controls)} Einträge" + (
             "  —  ungespeicherte Änderungen" if self.buffer.dirty else "")
         self._refresh_border_legend()
         self._refresh_chrome()

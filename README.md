@@ -40,6 +40,10 @@ Tabelle, Seitenleiste rechts, Statuszeile mit Farblegende.
   (Beendet/TBA/Gestoppt/NA; neue, noch nicht gespeicherte Termine rot; VÖ +2
   und +3 im Tooltip). Der Rahmen zeigt den Status, Schilder auf dem Cover
   „bestellt“ bzw. „abholbereit“.
+- **Ansicht:** drei Knöpfe neben den Filtern schalten zwischen Kacheln,
+  großen Kacheln (50 % größer, für die Cover) und einer Liste um (eine Zeile
+  je Werk mit kleinem Cover, Statusstreifen und denselben Angaben und
+  „+1“-Knöpfen). Die Wahl bleibt gespeichert (`view_mode` in config.json).
 - **Bedienung:** Klick wählt eine Kachel aus, Doppelklick bearbeitet,
   Rechtsklick öffnet das Kontextmenü (bei buchhandel.de suchen, neue
   VÖ-Termine abfragen, Bestell-Markierung entfernen, Cover erneut suchen /
